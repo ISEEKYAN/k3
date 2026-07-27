@@ -32,7 +32,15 @@ from mlite_k3 import register_model
 register_model()
 ```
 
-The bootstrap intentionally does not yet expose a buildable model protocol.
+To verify the registration contract against a Megatron Lite checkout:
+
+```bash
+export PYTHONPATH="$PWD/Megatron-LM/experimental/lite:$PWD/k3/src"
+python -m pytest -q k3/tests/smoke/test_registry_integration.py
+```
+
+Both CPU commands pass without CUDA. The bootstrap intentionally does not yet
+expose a buildable model protocol.
 
 ## The four-stage model-support workflow
 
@@ -58,4 +66,3 @@ instead of copying shared attention, expert, parallel, or checkpoint logic.
 
 When adding a capability, add the smallest failing test first and document only
 the behavior that the test actually exercises.
-
