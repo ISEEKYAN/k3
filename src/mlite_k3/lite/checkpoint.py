@@ -66,6 +66,10 @@ def get_hf_weight(reader: Any, name: str) -> torch.Tensor:
 
 def audit_k3_weight_index(
     index: Mapping[str, Any] | Mapping[str, str],
+    *,
+    num_hidden_layers: int | None = None,
+    first_k_dense_replace: int | None = None,
+    num_experts: int | None = None,
 ) -> WeightIndexAudit:
     """Validate K3's paired, shard-local routed-expert MXFP4 contract."""
     raw_weight_map = index.get("weight_map", index)
@@ -102,6 +106,31 @@ def audit_k3_weight_index(
     )
     if unpaired_scales:
         raise ValueError(f"{unpaired_scales[0]!r} is missing weight_packed")
+
+    coverage_shape = (num_hidden_layers, first_k_dense_replace, num_experts)
+    if any(value is not None for value in coverage_shape):
+        if not all(value is not None for value in coverage_shape):
+            raise ValueError(
+                "num_hidden_layers, first_k_dense_replace, and num_experts "
+                "must be provided together"
+            )
+        expected_bases = {
+            "language_model.model.layers."
+            f"{layer}.block_sparse_moe.experts.{expert}.{projection}.weight"
+            for layer in range(first_k_dense_replace, num_hidden_layers)
+            for expert in range(num_experts)
+            for projection in ("w1", "w2", "w3")
+        }
+        actual_bases = {key.removesuffix("_packed") for key in packed_keys}
+        missing = sorted(expected_bases - actual_bases)
+        unexpected = sorted(actual_bases - expected_bases)
+        if missing or unexpected:
+            detail = []
+            if missing:
+                detail.append(f"missing expected routed weight {missing[0]!r}")
+            if unexpected:
+                detail.append(f"unexpected routed weight {unexpected[0]!r}")
+            raise ValueError("; ".join(detail))
 
     return WeightIndexAudit(
         quantized_weights=len(packed_keys),

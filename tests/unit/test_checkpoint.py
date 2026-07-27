@@ -88,14 +88,24 @@ def test_packed_weight_requires_its_scale():
 
 def test_weight_index_audit_requires_complete_colocated_expert_pairs():
     weight_map = {
-        "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_packed": "a.safetensors",
-        "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_scale": "a.safetensors",
         "language_model.model.layers.1.self_attn.q_proj.weight": "b.safetensors",
     }
+    for projection in ("w1", "w2", "w3"):
+        base = (
+            "language_model.model.layers.1.block_sparse_moe.experts.0."
+            f"{projection}.weight"
+        )
+        weight_map[f"{base}_packed"] = "a.safetensors"
+        weight_map[f"{base}_scale"] = "a.safetensors"
 
-    summary = audit_k3_weight_index({"weight_map": weight_map})
+    summary = audit_k3_weight_index(
+        {"weight_map": weight_map},
+        num_hidden_layers=2,
+        first_k_dense_replace=1,
+        num_experts=1,
+    )
 
-    assert summary.quantized_weights == 1
+    assert summary.quantized_weights == 3
     assert summary.plain_tensors == 1
     assert summary.shards == 2
 
@@ -136,3 +146,22 @@ def test_weight_index_audit_fails_loudly_on_incomplete_or_misrouted_pairs(
 
     with pytest.raises(ValueError, match=message):
         audit_k3_weight_index({"weight_map": weight_map})
+
+
+def test_weight_index_audit_checks_every_layer_expert_and_projection():
+    weight_map = {}
+    for projection in ("w1", "w2"):
+        base = (
+            "language_model.model.layers.1.block_sparse_moe.experts.0."
+            f"{projection}.weight"
+        )
+        weight_map[f"{base}_packed"] = "a.safetensors"
+        weight_map[f"{base}_scale"] = "a.safetensors"
+
+    with pytest.raises(ValueError, match="missing expected routed weight.*w3"):
+        audit_k3_weight_index(
+            {"weight_map": weight_map},
+            num_hidden_layers=2,
+            first_k_dense_replace=1,
+            num_experts=1,
+        )
