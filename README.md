@@ -8,9 +8,12 @@ designed to keep model-specific composition outside Megatron Lite: importing
 the package has no registration side effect, and applications explicitly call
 `register_model()`.
 
-The initial bootstrap covers packaging and the external registration contract.
-Model construction, checkpoint loading, and numerical-parity claims will only
-be added with executable tests and recorded public references.
+The current text-only scope includes the native configuration, 69 KDA + 24
+gated-MLA layer schedule, Attention Residual composition, LatentMoE, and a
+single-rank Megatron Lite model protocol. The MoonViT vision encoder,
+distributed kernels, optimizer integration, and production checkpoint loading
+are not included yet. Unsupported parallel and optimizer settings fail
+explicitly.
 
 The first release targets the `KimiLinearForCausalLM` text backbone. MoonViT-V2
 and multimodal inputs are out of scope and must fail explicitly rather than
@@ -18,10 +21,16 @@ silently selecting the text path. Kimi K3 artifacts remain subject to the
 [Kimi K3 License](LICENSE); this repository does not interpret its commercial
 conditions.
 
-## Quick start
+The implementation is anchored to public
+[`moonshotai/Kimi-K3`](https://huggingface.co/moonshotai/Kimi-K3/tree/301be1b88c89c0d3a763da6301352cb8fe399e90)
+custom code and the
+[`MoonshotAI/FlashKDA`](https://github.com/MoonshotAI/FlashKDA/tree/d2ff19a6a0c82f39f796f637ebd1c36090b1268f)
+torch reference.
 
-Clone Megatron Lite next to this repository, create an isolated environment,
-install the package, and run the CPU contract tests:
+## Tutorial 1: install the package
+
+Clone Megatron Lite next to this external package, then create an isolated
+environment inside the K3 checkout:
 
 ```bash
 git clone https://github.com/ISEEKYAN/Megatron-LM.git
@@ -32,8 +41,9 @@ python -m venv .venv
 . .venv/bin/activate
 export PYTHONPATH="$PWD/../Megatron-LM/experimental/lite:$PWD/src"
 python -m pip install -e '.[test]'
-python -m pytest -q tests/unit
 ```
+
+## Tutorial 2: register K3 explicitly
 
 Register the external package before asking Megatron Lite to resolve Kimi K3:
 
@@ -41,17 +51,86 @@ Register the external package before asking Megatron Lite to resolve Kimi K3:
 from mlite_k3 import register_model
 
 register_model()
+
+from megatron.lite.model.registry import (
+    get_train_runtime_module,
+    resolve_model_type_from_hf,
+)
+
+assert resolve_model_type_from_hf({"model_type": "kimi_k3"}) == "k3"
+protocol = get_train_runtime_module("k3")
 ```
 
-The same environment can verify the registration contract against the real
-Megatron Lite registry:
+Importing `mlite_k3` alone does not mutate the registry.
+
+## Tutorial 3: run the tiny hybrid model on CPU
+
+The single-rank reference path is deliberately small and readable. It exercises
+a real KDA layer, a real gated-MLA layer, Attention Residuals, a dense first
+MLP, LatentMoE, logits, loss, and backward:
+
+```python
+import torch
+
+from mlite_k3.config import K3Config
+from mlite_k3.lite.protocol import ImplConfig, build_model
+
+config = K3Config(
+    hidden_size=16,
+    num_hidden_layers=2,
+    num_attention_heads=2,
+    num_key_value_heads=2,
+    vocab_size=32,
+    intermediate_size=24,
+    max_position_embeddings=16,
+    q_lora_rank=8,
+    kv_lora_rank=4,
+    qk_nope_head_dim=4,
+    qk_rope_head_dim=4,
+    v_head_dim=4,
+    kda_head_dim=4,
+    kda_num_heads=2,
+    kda_short_conv_kernel_size=2,
+    full_attention_layers=(2,),
+    kda_layers=(1,),
+    attn_res_block_size=2,
+    first_k_dense_replace=1,
+    moe_intermediate_size=6,
+    routed_expert_hidden_size=8,
+    num_experts=4,
+    num_experts_per_token=2,
+    num_shared_experts=2,
+)
+bundle = build_model(
+    config,
+    impl_cfg=ImplConfig(device="cpu", dtype="float32"),
+)
+output = bundle.chunks[0](
+    input_ids=torch.tensor([[1, 2, 3, 4]]),
+    labels=torch.tensor([[2, 3, 4, 5]]),
+)
+output["loss"].backward()
+print(output["logits"].shape)
+```
+
+This path is a correctness reference, not a performance implementation. It
+does not claim full-checkpoint or distributed parity.
+
+## Tutorial 4: run the CPU verification suite
+
+Run the package contracts and the real Megatron Lite registry/model-bundle
+smokes:
 
 ```bash
-python -m pytest -q tests/smoke/test_registry_integration.py
+python -m pytest -q \
+  tests/unit \
+  tests/smoke/test_registry_integration.py \
+  tests/smoke/test_tiny_model_bundle.py
 ```
 
-Both CPU commands pass without CUDA. The bootstrap intentionally does not yet
-expose a buildable model protocol.
+These checks require no CUDA. GPU, distributed, checkpoint, and numerical
+parity claims will only be added after their corresponding non-skipped tests
+have run.
 
 ## The four-stage model-support workflow
 
@@ -78,8 +157,8 @@ parallelism is unavailable on the FLA path.
 
 Keep model identity and composition in `src/mlite_k3/`, expose a single explicit
 registration entry point, and keep fast CPU contracts in `tests/unit/`.
-Architecture-specific code should depend on validated framework primitives
-instead of copying shared attention, expert, parallel, or checkpoint logic.
+Reusable KDA, gated-MLA, and LatentMoE behavior belongs in `primitives.py`;
+`model.py` only owns layer scheduling and model-specific composition.
 
 When adding a capability, add the smallest failing test first and document only
 the behavior that the test actually exercises.
