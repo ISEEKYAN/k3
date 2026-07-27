@@ -1,0 +1,7 @@
+Kimi K3
+Copyright (c) 2026 Moonshot AI
+
+This repository provides external Megatron Lite integration code for Kimi K3.
+Kimi K3 model artifacts are distributed by Moonshot AI under the Kimi K3
+License reproduced in LICENSE. This repository does not redistribute model
+weights or interpret the license's commercial-use conditions.

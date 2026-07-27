@@ -12,6 +12,12 @@ The initial bootstrap covers packaging and the external registration contract.
 Model construction, checkpoint loading, and numerical-parity claims will only
 be added with executable tests and recorded public references.
 
+The first release targets the `KimiLinearForCausalLM` text backbone. MoonViT-V2
+and multimodal inputs are out of scope and must fail explicitly rather than
+silently selecting the text path. Kimi K3 artifacts remain subject to the
+[Kimi K3 License](LICENSE); this repository does not interpret its commercial
+conditions.
+
 ## Quick start
 
 Clone Megatron Lite next to this repository, create an isolated environment,

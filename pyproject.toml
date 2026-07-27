@@ -9,6 +9,7 @@ description = "Moonshot AI Kimi K3 as an external model package for Megatron Lit
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Yan Bai" }]
+license = { file = "LICENSE" }
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",

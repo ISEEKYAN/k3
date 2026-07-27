@@ -16,6 +16,23 @@ paths work.
 The model revision, custom modeling files, checkpoint index, and quantization
 metadata must be pinned together before numerical tests are accepted.
 
+## Frozen first-release scope
+
+- Support the `KimiLinearForCausalLM` text backbone. Reject image or video
+  inputs explicitly at the configuration, processor, or model boundary.
+- Implement KDA as a reusable primitive against the pinned public
+  `modeling_kimi_linear.py` equations and the published kernel. Gated DeltaNet
+  is not an equivalent numerical reference.
+- Reuse the existing MLA dimensions, while making NoPE and the output gate
+  explicit capabilities that are disabled by default for other models.
+- Use reduced layer and expert counts for correctness and parallel proxy tests.
+  Do not use the full model or a full-width layer as the first correctness gate.
+- Parse the checkpoint index and compressed-tensors metadata before opening
+  shards. Only routed-expert linear weights use MXFP4; attention, shared
+  experts, dense MLP, output projection, and vision tensors remain unquantized.
+- Preserve the upstream Kimi K3 License and notice without making compatibility
+  or commercial-use claims.
+
 ## Verified CPU bootstrap
 
 At repository commit `6355ae9`, the following checks passed:
