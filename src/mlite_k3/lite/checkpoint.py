@@ -59,8 +59,11 @@ class K3WeightSpec:
 
     def __init__(self, config: Any):
         self.config = config
+        self._mapping: dict[str, list[str]] | None = None
 
     def weight_map(self) -> dict[str, list[str]]:
+        if self._mapping is not None:
+            return self._mapping
         mapping = {
             "embed_tokens.weight": ["language_model.model.embed_tokens.weight"],
             "output_attn_res_norm.weight": [
@@ -96,6 +99,7 @@ class K3WeightSpec:
                 mapping[f"{native}.mlp.down.weight"] = [f"{hf}.mlp.down_proj.weight"]
             else:
                 self._add_moe(mapping, native, hf)
+        self._mapping = mapping
         return mapping
 
     @staticmethod
