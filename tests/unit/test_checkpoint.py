@@ -6,6 +6,7 @@ import torch.nn as nn
 
 from mlite_k3.lite.checkpoint import (
     K3WeightSpec,
+    audit_k3_weight_spec_sources,
     audit_k3_weight_index,
     get_hf_weight,
     load_weights_from_reader,
@@ -288,6 +289,26 @@ def test_k3_weight_spec_applies_only_the_two_required_layout_transforms():
     assert torch.equal(fused, torch.cat((gate, up), dim=0))
     assert expanded.shape == (4, 1, 3)
     assert torch.equal(expanded.squeeze(1), conv)
+
+
+def test_k3_weight_spec_source_audit_accepts_plain_and_paired_weights():
+    spec = K3WeightSpec(_TinyConfig())
+    release_index = {}
+    for source_names in spec.weight_map().values():
+        for source_name in source_names:
+            if ".experts." in source_name:
+                release_index[f"{source_name}_packed"] = "a.safetensors"
+                release_index[f"{source_name}_scale"] = "a.safetensors"
+            else:
+                release_index[source_name] = "a.safetensors"
+
+    assert audit_k3_weight_spec_sources(spec, release_index) == len(
+        {name for names in spec.weight_map().values() for name in names}
+    )
+
+    release_index.pop("language_model.model.layers.0.self_attn.A_log")
+    with pytest.raises(ValueError, match="missing mapped K3 tensor.*A_log"):
+        audit_k3_weight_spec_sources(spec, release_index)
 
 
 def test_k3_weight_spec_roundtrips_dequantized_expert_layout():

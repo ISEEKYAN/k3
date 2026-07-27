@@ -200,6 +200,32 @@ class K3WeightSpec:
         return list(zip(names, parts, strict=True))
 
 
+def audit_k3_weight_spec_sources(
+    spec: K3WeightSpec,
+    index: Mapping[str, str],
+) -> int:
+    """Require every mapped text tensor before opening a release shard."""
+    expected = {
+        name for source_names in spec.weight_map().values() for name in source_names
+    }
+    for name in sorted(expected):
+        if name in index:
+            continue
+        if f"{name}_packed" in index and f"{name}_scale" in index:
+            continue
+        raise ValueError(f"missing mapped K3 tensor {name!r}")
+
+    indexed_text = {
+        name.removesuffix("_packed").removesuffix("_scale")
+        for name in index
+        if name.startswith("language_model.")
+    }
+    unexpected = sorted(indexed_text - expected)
+    if unexpected:
+        raise ValueError(f"unmapped K3 text tensor {unexpected[0]!r}")
+    return len(expected)
+
+
 def parse_k3_quantization_metadata(
     config: Mapping[str, Any],
 ) -> K3QuantizationMetadata:
@@ -372,7 +398,9 @@ def load_hf_weights(
     # closed before the next tensor, so a 96-shard release is never retained by
     # one process as a collection of open mmap handles.
     reader = SafeTensorReader(str(path))
-    load_weights_from_reader(model, reader, K3WeightSpec(config))
+    spec = K3WeightSpec(config)
+    audit_k3_weight_spec_sources(spec, reader.index)
+    load_weights_from_reader(model, reader, spec)
     return manifest
 
 
@@ -455,6 +483,7 @@ __all__ = [
     "K3CheckpointManifest",
     "K3QuantizationMetadata",
     "K3WeightSpec",
+    "audit_k3_weight_spec_sources",
     "WeightIndexAudit",
     "audit_k3_weight_index",
     "get_hf_weight",
