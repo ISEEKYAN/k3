@@ -10,11 +10,28 @@ paths work.
   `9a5d44e932587ae90489d23b782f0c3cd681aa46`
 - External-package template: `ISEEKYAN/hy3` commit
   `77d99447f6726891d2fcd86f350378466f403783`
-- Model configuration: `moonshotai/Kimi-K3`, whose public configuration uses
-  `model_type=kimi_k3` and `text_config.model_type=kimi_linear`
+- Model release: `moonshotai/Kimi-K3` commit
+  `9f62e4e9fffbd0a83ddd60e1c209d828994b3569`
+- Kimi-Linear reference: `MoonshotAI/Kimi-Linear` commit
+  `8c1d85eb6b5f8fcefb15758691b0ce50b0827ce3`
+- FlashKDA reference: `MoonshotAI/FlashKDA` commit
+  `d2ff19a6a0c82f39f796f637ebd1c36090b1268f`
 
-The model revision, custom modeling files, checkpoint index, and quantization
-metadata must be pinned together before numerical tests are accepted.
+The pinned Kimi K3 release has these SHA-256 digests:
+
+| File | SHA-256 |
+| --- | --- |
+| `config.json` | `9710e121a58d03ac92c8d6da287a19541994319afbbe6d6202af001ffd379213` |
+| `model.safetensors.index.json` | `a1c5210650ce71d2d3ae9ec5a101ac4afd3cf4b10091be589853437eb967febd` |
+| `modeling_kimi_k3.py` | `b9171c96726eda55234c92ac8dfae7e24c512fda68968ae8f2c3782b42665ea2` |
+| `modeling_kimi_linear.py` | `9e3564c70ac21854ce5a090cc946c5dc76b70d1050ef50840449181a20fff44a` |
+| `configuration_kimi_k3.py` | `735eb9ebe593e17d231e08e1df7f7be9b5ee0e079f511aa201f9572077b416ae` |
+
+The 59,764,096-byte index contains 497,220 keys across 96 shards. Its
+247,296 `weight_packed` and 247,296 `weight_scale` entries cover exactly
+92 MoE layers × 896 routed experts × three projections. The remaining 2,628
+tensors are unquantized. The package audits these counts and every mapped
+text-backbone source name before it opens a weight shard.
 
 ## Frozen first-release scope
 
