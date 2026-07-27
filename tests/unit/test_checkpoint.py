@@ -6,6 +6,7 @@ import torch
 from mlite_k3.lite.checkpoint import (
     audit_k3_weight_index,
     get_hf_weight,
+    parse_k3_quantization_metadata,
 )
 
 
@@ -16,6 +17,39 @@ class _Reader:
 
     def get_tensor(self, name: str) -> torch.Tensor:
         return self._tensors[name]
+
+
+def _quantization_config() -> dict:
+    return {
+        "text_config": {
+            "quantization_config": {
+                "config_groups": {
+                    "group_0": {
+                        "format": "mxfp4-pack-quantized",
+                        "targets": ["Linear"],
+                        "weights": {
+                            "dynamic": False,
+                            "group_size": 32,
+                            "num_bits": 4,
+                            "scale_dtype": "torch.uint8",
+                            "symmetric": True,
+                            "type": "float",
+                        },
+                    }
+                },
+                "format": "mxfp4-pack-quantized",
+                "ignore": [
+                    r"re:.*self_attn.*",
+                    r"re:.*shared_experts.*",
+                    r"re:.*mlp\.(gate|up|gate_up|down)_proj.*",
+                    r"re:.*lm_head.*",
+                    r"re:.*vision_tower.*",
+                    r"re:.*mm_projector.*",
+                ],
+                "quant_method": "compressed-tensors",
+            }
+        }
+    }
 
 
 def _independent_mxfp4_reference(
@@ -66,6 +100,46 @@ def test_release_mxfp4_pair_matches_independent_compressed_tensors_formula():
 
     assert got.dtype == torch.float32
     assert torch.equal(got, expected)
+
+
+def test_public_compressed_tensors_metadata_is_frozen():
+    metadata = parse_k3_quantization_metadata(_quantization_config())
+
+    assert metadata.format == "mxfp4-pack-quantized"
+    assert metadata.group_size == 32
+    assert metadata.num_bits == 4
+    assert metadata.scale_dtype == "torch.uint8"
+
+
+@pytest.mark.parametrize(
+    "mutation, message",
+    [
+        (
+            lambda config: config["text_config"]["quantization_config"].update(
+                {"quant_method": "other"}
+            ),
+            "quant_method",
+        ),
+        (
+            lambda config: config["text_config"]["quantization_config"][
+                "config_groups"
+            ]["group_0"]["weights"].update({"group_size": 128}),
+            "weight metadata",
+        ),
+        (
+            lambda config: config["text_config"]["quantization_config"][
+                "ignore"
+            ].remove(r"re:.*shared_experts.*"),
+            "ignore list",
+        ),
+    ],
+)
+def test_compressed_tensors_metadata_drift_fails_loudly(mutation, message):
+    config = _quantization_config()
+    mutation(config)
+
+    with pytest.raises(ValueError, match=message):
+        parse_k3_quantization_metadata(config)
 
 
 def test_plain_bf16_weight_is_not_reinterpreted():
