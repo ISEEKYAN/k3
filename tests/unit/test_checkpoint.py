@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from mlite_k3.lite.checkpoint import (
+    K3WeightSpec,
     audit_k3_weight_index,
     get_hf_weight,
     parse_k3_quantization_metadata,
@@ -239,3 +240,68 @@ def test_weight_index_audit_checks_every_layer_expert_and_projection():
             first_k_dense_replace=1,
             num_experts=1,
         )
+
+
+class _TinyConfig:
+    num_hidden_layers = 2
+    first_k_dense_replace = 1
+    num_experts = 1
+
+    @staticmethod
+    def attention_type(layer_index: int) -> str:
+        return ("kda", "mla")[layer_index]
+
+
+def test_k3_weight_spec_covers_text_backbone_with_k3_specific_expert_names():
+    mapping = K3WeightSpec(_TinyConfig()).weight_map()
+
+    assert mapping["embed_tokens.weight"] == [
+        "language_model.model.embed_tokens.weight"
+    ]
+    assert mapping["layers.0.self_attention.q_conv1d.conv.weight"] == [
+        "language_model.model.layers.0.self_attn.q_conv1d.weight"
+    ]
+    assert mapping["layers.1.self_attention.q_a_proj.weight"] == [
+        "language_model.model.layers.1.self_attn.q_a_proj.weight"
+    ]
+    assert mapping["layers.1.moe.experts.0.gate_up.weight"] == [
+        "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight",
+        "language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight",
+    ]
+    assert mapping["layers.1.moe.experts.0.down.weight"] == [
+        "language_model.model.layers.1.block_sparse_moe.experts.0.w2.weight"
+    ]
+    assert not any("vision" in name for names in mapping.values() for name in names)
+
+
+def test_k3_weight_spec_applies_only_the_two_required_layout_transforms():
+    spec = K3WeightSpec(_TinyConfig())
+    gate = torch.randn(3, 4)
+    up = torch.randn(3, 4)
+    conv = torch.randn(4, 3)
+
+    fused = spec.hf_to_native("layers.1.moe.experts.0.gate_up.weight", [gate, up])
+    expanded = spec.hf_to_native("layers.0.self_attention.q_conv1d.conv.weight", [conv])
+
+    assert torch.equal(fused, torch.cat((gate, up), dim=0))
+    assert expanded.shape == (4, 1, 3)
+    assert torch.equal(expanded.squeeze(1), conv)
+
+
+def test_k3_weight_spec_roundtrips_dequantized_expert_layout():
+    spec = K3WeightSpec(_TinyConfig())
+    gate = torch.randn(3, 32, dtype=torch.bfloat16)
+    up = torch.randn(3, 32, dtype=torch.bfloat16)
+    native_name = "layers.1.moe.experts.0.gate_up.weight"
+
+    native = spec.hf_to_native(native_name, [gate, up])
+    restored = dict(spec.native_to_hf(native_name, native))
+
+    assert torch.equal(
+        restored["language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight"],
+        gate,
+    )
+    assert torch.equal(
+        restored["language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight"],
+        up,
+    )
