@@ -14,12 +14,17 @@ be added with executable tests and recorded public references.
 
 ## Quick start
 
-Create an isolated environment, install the package, and run the CPU contract
-tests:
+Clone Megatron Lite next to this repository, create an isolated environment,
+install the package, and run the CPU contract tests:
 
 ```bash
+git clone https://github.com/ISEEKYAN/Megatron-LM.git
+git clone https://github.com/ISEEKYAN/k3.git
+cd k3
+
 python -m venv .venv
 . .venv/bin/activate
+export PYTHONPATH="$PWD/../Megatron-LM/experimental/lite:$PWD/src"
 python -m pip install -e '.[test]'
 python -m pytest -q tests/unit
 ```
@@ -32,11 +37,11 @@ from mlite_k3 import register_model
 register_model()
 ```
 
-To verify the registration contract against a Megatron Lite checkout:
+The same environment can verify the registration contract against the real
+Megatron Lite registry:
 
 ```bash
-export PYTHONPATH="$PWD/Megatron-LM/experimental/lite:$PWD/k3/src"
-python -m pytest -q k3/tests/smoke/test_registry_integration.py
+python -m pytest -q tests/smoke/test_registry_integration.py
 ```
 
 Both CPU commands pass without CUDA. The bootstrap intentionally does not yet
