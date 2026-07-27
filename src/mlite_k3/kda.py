@@ -112,7 +112,7 @@ class _CausalDepthwiseConv1d(nn.Module):
             channels,
             kernel_size,
             groups=channels,
-            bias=True,
+            bias=False,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

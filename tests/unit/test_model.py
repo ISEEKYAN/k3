@@ -166,6 +166,20 @@ def test_hybrid_model_uses_kda_mla_and_latent_moe_in_real_forward_backward():
         raise AssertionError("vision inputs must not be silently accepted")
 
 
+def test_kda_short_convolutions_match_bias_free_checkpoint_contract():
+    from mlite_k3.kda import KDA
+    from mlite_k3.model import K3Model
+
+    model = K3Model(tiny_config())
+    kda = model.layers[0].self_attention
+    assert isinstance(kda, KDA)
+
+    for name in ("q_conv1d", "k_conv1d", "v_conv1d"):
+        convolution = getattr(kda, name).conv
+        assert convolution.bias is None
+        assert f"layers.0.self_attention.{name}.conv.bias" not in model.state_dict()
+
+
 def test_protocol_is_importable_and_builds_tiny_config_from_public_shape():
     from mlite_k3.lite import protocol
 
