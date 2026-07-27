@@ -385,6 +385,22 @@ def load_weights_from_reader(
     return loaded
 
 
+def iter_hf_weights(
+    model: torch.nn.Module,
+    spec: K3WeightSpec,
+):
+    """Yield plain HF tensors one native parameter at a time."""
+    base = _unwrap_model(model)
+    mapping = spec.weight_map()
+    for native_name, parameter in base.named_parameters():
+        if native_name not in mapping:
+            raise KeyError(
+                f"native parameter {native_name!r} has no K3 checkpoint mapping"
+            )
+        tensor = parameter.detach().cpu()
+        yield from spec.native_to_hf(native_name, tensor)
+
+
 def load_hf_weights(
     model: torch.nn.Module,
     path: str | Path,
@@ -488,6 +504,7 @@ __all__ = [
     "audit_k3_weight_index",
     "get_hf_weight",
     "inspect_hf_checkpoint",
+    "iter_hf_weights",
     "load_hf_weights",
     "load_weights_from_reader",
     "parse_k3_quantization_metadata",

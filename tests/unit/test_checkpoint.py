@@ -9,6 +9,7 @@ from mlite_k3.lite.checkpoint import (
     audit_k3_weight_spec_sources,
     audit_k3_weight_index,
     get_hf_weight,
+    iter_hf_weights,
     load_weights_from_reader,
     parse_k3_quantization_metadata,
 )
@@ -390,6 +391,36 @@ def test_streaming_loader_dequantizes_and_copies_one_tiny_expert():
     assert torch.equal(
         model.layers[0].moe.experts[0].gate_up.weight.float(),
         torch.cat((expected_gate, expected_up), dim=0),
+    )
+
+
+def test_tiny_mxfp4_load_plain_bf16_export_and_reload_is_bitwise():
+    low_codes = torch.tensor([0, 2, 4, 6, 8, 10, 12, 14], dtype=torch.uint8)
+    high_codes = torch.tensor([1, 3, 5, 7, 9, 11, 13, 15], dtype=torch.uint8)
+    packed = (low_codes | (high_codes << 4)).repeat(3, 2)
+    scale = torch.full((3, 1), 127, dtype=torch.uint8)
+    prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
+    quantized = _Reader(
+        {
+            f"{prefix}.w1.weight_packed": packed,
+            f"{prefix}.w1.weight_scale": scale,
+            f"{prefix}.w3.weight_packed": packed ^ 0x88,
+            f"{prefix}.w3.weight_scale": scale,
+        }
+    )
+    spec = K3WeightSpec(_ExpertConfig())
+    first = _TinyExpertModel()
+    second = _TinyExpertModel()
+
+    load_weights_from_reader(first, quantized, spec)
+    plain_bf16 = dict(iter_hf_weights(first, spec))
+    load_weights_from_reader(second, _Reader(plain_bf16), spec)
+
+    assert set(plain_bf16) == {f"{prefix}.w1.weight", f"{prefix}.w3.weight"}
+    assert all(tensor.dtype == torch.bfloat16 for tensor in plain_bf16.values())
+    assert torch.equal(
+        first.layers[0].moe.experts[0].gate_up.weight,
+        second.layers[0].moe.experts[0].gate_up.weight,
     )
 
 
