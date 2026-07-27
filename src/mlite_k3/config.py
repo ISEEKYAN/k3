@@ -88,6 +88,18 @@ class K3Config:
     def shared_expert_intermediate_size(self) -> int:
         return self.moe_intermediate_size * self.num_shared_experts
 
+    @staticmethod
+    def ensure_text_only_inputs(
+        *,
+        pixel_values: Any | None = None,
+        images: Any | None = None,
+    ) -> None:
+        if pixel_values is not None or images is not None:
+            raise NotImplementedError(
+                "mlite-k3 currently supports KimiLinearForCausalLM text inputs only; "
+                "MoonViT-V2 and multimodal inputs are outside this release"
+            )
+
     def _validate(self) -> None:
         errors: list[str] = []
 

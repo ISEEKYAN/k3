@@ -117,3 +117,10 @@ def test_config_rejects_incomplete_or_overlapping_attention_schedule():
 def test_config_rejects_bare_vision_model_type():
     with pytest.raises(ValueError, match="kimi_k3 or kimi_linear"):
         K3Config._from_hf_dict({"model_type": "moonvit"})
+
+
+def test_config_fails_loudly_on_multimodal_inputs():
+    with pytest.raises(NotImplementedError, match="text inputs only"):
+        K3Config.ensure_text_only_inputs(pixel_values=object())
+    with pytest.raises(NotImplementedError, match="MoonViT-V2"):
+        K3Config.ensure_text_only_inputs(images=[object()])

@@ -18,6 +18,7 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+kda = ["flash-linear-attention>=0.5.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

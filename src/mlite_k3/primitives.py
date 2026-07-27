@@ -1,9 +1,4 @@
-"""Kimi K3 architecture primitives.
-
-The CPU KDA recurrence follows the public Moonshot FlashKDA torch reference.
-The CUDA production backend can replace this bounded reference without changing
-the model composition API.
-"""
+"""Kimi K3 architecture primitives."""
 
 from __future__ import annotations
 
@@ -12,21 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from mlite_k3.config import K3Config
-
-
-class RMSNorm(nn.Module):
-    def __init__(self, hidden_size: int, eps: float) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
-        self.variance_epsilon = eps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        dtype = x.dtype
-        normalized = x.float()
-        normalized = normalized * torch.rsqrt(
-            normalized.square().mean(dim=-1, keepdim=True) + self.variance_epsilon
-        )
-        return self.weight * normalized.to(dtype)
+from mlite_k3.norm import RMSNorm
 
 
 def situ_and_mul(
@@ -60,132 +41,6 @@ class K3MLP(nn.Module):
                 linear_beta=self.linear_beta,
             )
         )
-
-
-def kda_recurrent_reference(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    gate_logits: torch.Tensor,
-    beta_logits: torch.Tensor,
-    *,
-    a_log: torch.Tensor,
-    dt_bias: torch.Tensor,
-    lower_bound: float,
-    initial_state: torch.Tensor | None = None,
-    scale: float = 1.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Differentiable recurrent KDA reference for small CPU correctness tests.
-
-    Inputs use ``[batch, sequence, heads, head_dim]``. This intentionally favors
-    clarity over throughput and must not be used for full-scale training.
-    """
-    if q.shape != k.shape or q.shape != v.shape or q.shape != gate_logits.shape:
-        raise ValueError("q, k, v, and gate_logits must have the same shape")
-    if beta_logits.shape != q.shape[:-1]:
-        raise ValueError("beta_logits must have shape [batch, sequence, heads]")
-    batch, sequence, heads, head_dim = q.shape
-    if a_log.shape != (heads,) or dt_bias.shape != (heads, head_dim):
-        raise ValueError("KDA A_log/dt_bias shapes do not match heads and head_dim")
-
-    q = F.normalize(q.float(), p=2, dim=-1)
-    k = F.normalize(k.float(), p=2, dim=-1)
-    v = v.float()
-    gate = lower_bound * torch.sigmoid(
-        a_log.float().exp().view(1, 1, heads, 1)
-        * (gate_logits.float() + dt_bias.float().view(1, 1, heads, head_dim))
-    )
-    beta = torch.sigmoid(beta_logits.float())
-    state = (
-        q.new_zeros(batch, heads, head_dim, head_dim)
-        if initial_state is None
-        else initial_state.float()
-    )
-    outputs = []
-    for index in range(sequence):
-        state = state * gate[:, index].exp().unsqueeze(-1)
-        prediction = torch.einsum("bhd,bhdv->bhv", k[:, index], state)
-        delta = (v[:, index] - prediction) * beta[:, index].unsqueeze(-1)
-        state = state + torch.einsum("bhd,bhv->bhdv", k[:, index], delta)
-        outputs.append(torch.einsum("bhd,bhdv->bhv", q[:, index], state) * scale)
-    return torch.stack(outputs, dim=1).to(v.dtype), state
-
-
-class _CausalDepthwiseConv1d(nn.Module):
-    def __init__(self, channels: int, kernel_size: int) -> None:
-        super().__init__()
-        self.kernel_size = kernel_size
-        self.conv = nn.Conv1d(
-            channels,
-            channels,
-            kernel_size,
-            groups=channels,
-            bias=True,
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        values = x.transpose(1, 2)
-        values = F.pad(values, (self.kernel_size - 1, 0))
-        return F.silu(self.conv(values).transpose(1, 2))
-
-
-class KimiDeltaAttention(nn.Module):
-    """KDA projection stack with a CPU reference recurrent backend."""
-
-    def __init__(self, config: K3Config) -> None:
-        super().__init__()
-        heads = config.kda_num_heads
-        head_dim = config.kda_head_dim
-        projection_size = heads * head_dim
-        self.heads = heads
-        self.head_dim = head_dim
-        self.lower_bound = config.kda_gate_lower_bound
-        self.q_proj = nn.Linear(config.hidden_size, projection_size, bias=False)
-        self.k_proj = nn.Linear(config.hidden_size, projection_size, bias=False)
-        self.v_proj = nn.Linear(config.hidden_size, projection_size, bias=False)
-        self.q_conv1d = _CausalDepthwiseConv1d(
-            projection_size, config.kda_short_conv_kernel_size
-        )
-        self.k_conv1d = _CausalDepthwiseConv1d(
-            projection_size, config.kda_short_conv_kernel_size
-        )
-        self.v_conv1d = _CausalDepthwiseConv1d(
-            projection_size, config.kda_short_conv_kernel_size
-        )
-        self.A_log = nn.Parameter(torch.zeros(heads, dtype=torch.float32))
-        self.dt_bias = nn.Parameter(torch.zeros(projection_size, dtype=torch.float32))
-        self.f_a_proj = nn.Linear(config.hidden_size, head_dim, bias=False)
-        self.f_b_proj = nn.Linear(head_dim, projection_size, bias=False)
-        self.b_proj = nn.Linear(config.hidden_size, heads, bias=False)
-        if not config.kda_use_full_rank_gate:
-            raise ValueError("Kimi K3 requires a full-rank KDA output gate")
-        self.g_proj = nn.Linear(config.hidden_size, projection_size, bias=False)
-        self.o_norm = RMSNorm(head_dim, config.rms_norm_eps)
-        self.o_proj = nn.Linear(projection_size, config.hidden_size, bias=False)
-
-    def _heads(self, x: torch.Tensor) -> torch.Tensor:
-        return x.view(*x.shape[:-1], self.heads, self.head_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        q = self._heads(self.q_conv1d(self.q_proj(x)))
-        k = self._heads(self.k_conv1d(self.k_proj(x)))
-        v = self._heads(self.v_conv1d(self.v_proj(x)))
-        feature_gate = self._heads(self.f_b_proj(self.f_a_proj(x)))
-        beta = self.b_proj(x)
-        output, _ = kda_recurrent_reference(
-            q,
-            k,
-            v,
-            feature_gate,
-            beta,
-            a_log=self.A_log,
-            dt_bias=self.dt_bias.view(self.heads, self.head_dim),
-            lower_bound=self.lower_bound,
-            scale=self.head_dim**-0.5,
-        )
-        output_gate = torch.sigmoid(self._heads(self.g_proj(x)))
-        output = self.o_norm(output) * output_gate
-        return self.o_proj(output.flatten(-2))
 
 
 class GatedMultiLatentAttention(nn.Module):
@@ -324,9 +179,6 @@ class LatentMoE(nn.Module):
 __all__ = [
     "GatedMultiLatentAttention",
     "K3MLP",
-    "KimiDeltaAttention",
     "LatentMoE",
-    "RMSNorm",
-    "kda_recurrent_reference",
     "situ_and_mul",
 ]

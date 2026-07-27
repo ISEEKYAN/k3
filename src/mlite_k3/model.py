@@ -7,12 +7,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from mlite_k3.config import K3Config
+from mlite_k3.kda import KDA
+from mlite_k3.norm import RMSNorm
 from mlite_k3.primitives import (
     GatedMultiLatentAttention,
     K3MLP,
-    KimiDeltaAttention,
     LatentMoE,
-    RMSNorm,
 )
 
 
@@ -37,7 +37,15 @@ class K3DecoderLayer(nn.Module):
         self.layer_index = layer_index
         self.attn_res_block_size = config.attn_res_block_size
         if config.attention_type(layer_index) == "kda":
-            self.self_attention: nn.Module = KimiDeltaAttention(config)
+            self.self_attention: nn.Module = KDA(
+                hidden_size=config.hidden_size,
+                heads=config.kda_num_heads,
+                head_dim=config.kda_head_dim,
+                short_conv_kernel_size=config.kda_short_conv_kernel_size,
+                lower_bound=config.kda_gate_lower_bound,
+                norm_eps=config.rms_norm_eps,
+                use_full_rank_gate=config.kda_use_full_rank_gate,
+            )
         else:
             self.self_attention = GatedMultiLatentAttention(config)
         self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
@@ -113,7 +121,13 @@ class K3Model(nn.Module):
         *,
         input_ids: torch.Tensor,
         labels: torch.Tensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        images=None,
     ) -> dict[str, torch.Tensor]:
+        self.config.ensure_text_only_inputs(
+            pixel_values=pixel_values,
+            images=images,
+        )
         hidden_states = self.embed_tokens(input_ids)
         batch, sequence, hidden = hidden_states.shape
         block_residual = hidden_states.new_zeros(batch * sequence, 0, hidden)

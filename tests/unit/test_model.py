@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+
 import torch
 
 from mlite_k3.config import K3Config
@@ -35,7 +38,7 @@ def tiny_config() -> K3Config:
 
 
 def test_kda_reference_recurrence_matches_one_token_equation():
-    from mlite_k3.primitives import kda_recurrent_reference
+    from mlite_k3.kda import kda_recurrent_reference
 
     q = torch.tensor([[[[1.0, 0.0]]]])
     k = torch.tensor([[[[1.0, 0.0]]]])
@@ -61,17 +64,84 @@ def test_kda_reference_recurrence_matches_one_token_equation():
     torch.testing.assert_close(out, torch.tensor([[[[1.0, -0.5]]]]))
 
 
+def test_kda_cuda_contract_calls_fla_chunk_kernel(monkeypatch):
+    from mlite_k3.kda import _fla_chunk_kda
+
+    calls = []
+    kda_module = ModuleType("fla.ops.kda")
+
+    def chunk_kda(**kwargs):
+        calls.append(kwargs)
+        return kwargs["v"] + 1, None
+
+    kda_module.chunk_kda = chunk_kda
+    monkeypatch.setitem(sys.modules, "fla", ModuleType("fla"))
+    monkeypatch.setitem(sys.modules, "fla.ops", ModuleType("fla.ops"))
+    monkeypatch.setitem(sys.modules, "fla.ops.kda", kda_module)
+    q = torch.zeros(1, 2, 1, 2)
+    result = _fla_chunk_kda(
+        q,
+        q,
+        q,
+        q,
+        torch.zeros(1, 2, 1),
+        a_log=torch.zeros(1),
+        dt_bias=torch.zeros(1, 2),
+        lower_bound=-5.0,
+        scale=2**-0.5,
+    )
+
+    assert torch.equal(result, torch.ones_like(q))
+    assert calls[0]["use_qk_l2norm_in_kernel"] is True
+    assert calls[0]["use_gate_in_kernel"] is True
+    assert calls[0]["use_beta_sigmoid_in_kernel"] is True
+    assert calls[0]["safe_gate"] is True
+    assert calls[0]["lower_bound"] == -5.0
+    assert calls[0]["scale"] == 2**-0.5
+    assert calls[0]["state_v_first"] is True
+
+
+def test_kda_cuda_contract_does_not_call_flash_kda_directly(monkeypatch):
+    from mlite_k3.kda import _fla_chunk_kda
+
+    monkeypatch.setitem(sys.modules, "fla", ModuleType("fla"))
+    monkeypatch.delitem(sys.modules, "fla.ops", raising=False)
+    monkeypatch.delitem(sys.modules, "fla.ops.kda", raising=False)
+    direct_backend = ModuleType("flash_kda")
+
+    def forbidden_direct_call(*args, **kwargs):
+        raise AssertionError("FlashKDA must only be selected behind FLA")
+
+    direct_backend.fwd = forbidden_direct_call
+    monkeypatch.setitem(sys.modules, "flash_kda", direct_backend)
+    q = torch.zeros(1, 2, 1, 2)
+
+    try:
+        _fla_chunk_kda(
+            q,
+            q,
+            q,
+            q,
+            torch.zeros(1, 2, 1),
+            a_log=torch.zeros(1),
+            dt_bias=torch.zeros(1, 2),
+            lower_bound=-5.0,
+            scale=2**-0.5,
+        )
+    except ImportError as error:
+        assert "flash-linear-attention" in str(error)
+    else:
+        raise AssertionError("CUDA KDA must fail loudly when FLA is unavailable")
+
+
 def test_hybrid_model_uses_kda_mla_and_latent_moe_in_real_forward_backward():
     from mlite_k3.model import K3Model
-    from mlite_k3.primitives import (
-        GatedMultiLatentAttention,
-        KimiDeltaAttention,
-        LatentMoE,
-    )
+    from mlite_k3.kda import KDA
+    from mlite_k3.primitives import GatedMultiLatentAttention, LatentMoE
 
     torch.manual_seed(7)
     model = K3Model(tiny_config())
-    assert isinstance(model.layers[0].self_attention, KimiDeltaAttention)
+    assert isinstance(model.layers[0].self_attention, KDA)
     assert isinstance(model.layers[1].self_attention, GatedMultiLatentAttention)
     assert model.layers[0].moe is None
     assert isinstance(model.layers[1].moe, LatentMoE)
@@ -88,6 +158,12 @@ def test_hybrid_model_uses_kda_mla_and_latent_moe_in_real_forward_backward():
     assert model.layers[1].self_attention.g_proj.weight.grad is not None
     assert model.layers[1].moe.router.weight.grad is not None
     assert model.layers[1].moe.routed_expert_down_proj.weight.grad is not None
+    try:
+        model(input_ids=input_ids, pixel_values=torch.zeros(1))
+    except NotImplementedError as error:
+        assert "text inputs only" in str(error)
+    else:
+        raise AssertionError("vision inputs must not be silently accepted")
 
 
 def test_protocol_is_importable_and_builds_tiny_config_from_public_shape():

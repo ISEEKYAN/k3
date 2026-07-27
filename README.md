@@ -12,8 +12,9 @@ The current text-only scope includes the native configuration, 69 KDA + 24
 gated-MLA layer schedule, Attention Residual composition, LatentMoE, and a
 single-rank Megatron Lite model protocol. The MoonViT vision encoder,
 distributed kernels, optimizer integration, and production checkpoint loading
-are not included yet. Unsupported parallel and optimizer settings fail
-explicitly.
+are not included yet. The repository does include a streaming-index audit and
+an MXFP4 routed-expert pair decoder, but it does not claim full-checkpoint
+loading. Unsupported multimodal, parallel, and optimizer inputs fail explicitly.
 
 The first release targets the `KimiLinearForCausalLM` text backbone. MoonViT-V2
 and multimodal inputs are out of scope and must fail explicitly rather than
@@ -25,7 +26,14 @@ The implementation is anchored to public
 [`moonshotai/Kimi-K3`](https://huggingface.co/moonshotai/Kimi-K3/tree/301be1b88c89c0d3a763da6301352cb8fe399e90)
 custom code and the
 [`MoonshotAI/FlashKDA`](https://github.com/MoonshotAI/FlashKDA/tree/d2ff19a6a0c82f39f796f637ebd1c36090b1268f)
-torch reference.
+kernel interface, together with
+[`flash-linear-attention`](https://github.com/fla-org/flash-linear-attention/tree/0a9b9f222e86b9a895c2447767e9b4cce6c8d530).
+The initial CUDA compute path is `fla.ops.kda.chunk_kda`. FlashKDA is a
+forward-only optional acceleration backend behind FLA; it has not been
+validated in the approved environment and this package makes no FlashKDA
+execution or performance claim. Context parallelism is not available on the
+initial FLA path. The bounded torch recurrence is used only by the tiny CPU
+correctness path.
 
 ## Tutorial 1: install the package
 
@@ -147,18 +155,13 @@ have run.
 No later-stage capability is considered supported until its corresponding test
 has passed on the stated execution path.
 
-## KDA execution boundaries
-
-The initial KDA compute path uses FLA `chunk_kda`. FlashKDA is a forward-only
-optional acceleration path and has not been validated for this package. Context
-parallelism is unavailable on the FLA path.
-
 ## Use this repository as a template
 
 Keep model identity and composition in `src/mlite_k3/`, expose a single explicit
 registration entry point, and keep fast CPU contracts in `tests/unit/`.
-Reusable KDA, gated-MLA, and LatentMoE behavior belongs in `primitives.py`;
-`model.py` only owns layer scheduling and model-specific composition.
+Reusable KDA behavior belongs in the model-independent `kda.py`; gated-MLA and
+LatentMoE behavior belongs in `primitives.py`; `model.py` owns configuration
+mapping, layer scheduling, and model-specific composition.
 
 When adding a capability, add the smallest failing test first and document only
 the behavior that the test actually exercises.

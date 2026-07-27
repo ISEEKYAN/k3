@@ -5,3 +5,19 @@ This repository provides external Megatron Lite integration code for Kimi K3.
 Kimi K3 model artifacts are distributed by Moonshot AI under the Kimi K3
 License reproduced in LICENSE. This repository does not redistribute model
 weights or interpret the license's commercial-use conditions.
+
+This package implements the text architecture published with Kimi K3.
+
+The Kimi K3 configuration, custom modeling code, and KDA mathematics are
+referenced from moonshotai/Kimi-K3 revision
+301be1b88c89c0d3a763da6301352cb8fe399e90.
+
+The CPU KDA correctness path is derived from the public torch reference in
+MoonshotAI/FlashKDA revision d2ff19a6a0c82f39f796f637ebd1c36090b1268f.
+The initial CUDA path calls flash-linear-attention's chunk_kda interface.
+FlashKDA is a forward-only optional FLA backend and has not been validated for
+this package.
+
+The original Kimi K3 License is reproduced in LICENSE. This notice records
+provenance only and does not interpret the license or make compatibility or
+commercial-use claims.
