@@ -36,6 +36,12 @@ execution or performance claim. Context parallelism is not available on the
 initial FLA path. The bounded torch recurrence is used only by the tiny CPU
 correctness path.
 
+The model projection wrapper consumes the shared Megatron Lite KDA operator
+introduced by
+[`ISEEKYAN/Megatron-LM#136`](https://github.com/ISEEKYAN/Megatron-LM/pull/136).
+Until that PR lands on `main`, check out its head branch in the adjacent
+Megatron Lite clone before running model tests.
+
 ## Tutorial 1: install the package
 
 Clone Megatron Lite next to this external package, then create an isolated
@@ -133,13 +139,14 @@ smokes:
 ```bash
 python -m pytest -q \
   tests/unit \
+  tests/parity/test_tiny_proxy_parity.py \
   tests/smoke/test_registry_integration.py \
   tests/smoke/test_tiny_model_bundle.py
 ```
 
 These checks require no CUDA. The verified checkpoint and numerical scope is
-the reduced proxy below; GPU and distributed claims require their own
-non-skipped tests.
+the reduced checkpoint proxy and independent functional proxy below; GPU and
+distributed claims require their own non-skipped tests.
 
 ## Verified first-release checkpoint proxy
 
@@ -154,11 +161,18 @@ are `0.0` and `2.384185791015625e-07`; final-logit maximum absolute difference
 is `2.9802322387695312e-07`. Plain export/reload restores every parameter and
 the logits bit-for-bit.
 
-Expert, context, tensor, and pipeline parallelism, THD sequences, GPU kernels,
-and short training are deferred and have not been validated. They require the
-corresponding shared-primitives and checkpoint-placement pull request in
-Megatron Lite, followed by scheduler-backed tests. These paths must not be
-inferred from the single-rank proxy.
+The independent functional tiny proxy retains one
+KDA layer, one gated-MLA layer, one dense MLP, and one four-expert LatentMoE
+layer. With seed `20260727`, its maximum absolute differences were
+`8.940696716308594e-07` across layer outputs,
+`3.5762786865234375e-07` for logits, `0.0` for loss, and
+`2.384185791015625e-07` across the six representative gradients checked.
+This is reduced CPU proxy evidence, not execution of the full public model
+class or checkpoint-conversion parity.
+
+These CPU proxies do not establish GPU, distributed, or short-training
+support. Those capabilities require their own scheduler-backed
+forward/backward tests and are documented separately below.
 
 ## The four-stage model-support workflow
 
@@ -193,7 +207,8 @@ reference path.
 
 Keep model identity and composition in `src/mlite_k3/`, expose a single explicit
 registration entry point, and keep fast CPU contracts in `tests/unit/`.
-Reusable KDA behavior belongs in the model-independent `kda.py`; gated-MLA and
+Reusable KDA recurrence/backend selection belongs in Megatron Lite's shared
+primitive; `kda.py` owns only K3 projections and output gating. Gated-MLA and
 LatentMoE behavior belongs in `primitives.py`; `model.py` owns configuration
 mapping, layer scheduling, and model-specific composition. K3-specific
 primitives remain self-contained in this repository and require no K3 changes
