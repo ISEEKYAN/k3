@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlite-k3"
+version = "0.1.0"
+description = "Moonshot AI Kimi K3 as an external model package for Megatron Lite"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Yan Bai" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+markers = [
+  "mlite: Megatron Lite tests",
+  "smoke: integration smoke tests",
+  "gpu: requires CUDA",
+  "distributed: requires torch.distributed",
+]
