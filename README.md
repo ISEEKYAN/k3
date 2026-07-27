@@ -68,6 +68,12 @@ expose a buildable model protocol.
 No later-stage capability is considered supported until its corresponding test
 has passed on the stated execution path.
 
+## KDA execution boundaries
+
+The initial KDA compute path uses FLA `chunk_kda`. FlashKDA is a forward-only
+optional acceleration path and has not been validated for this package. Context
+parallelism is unavailable on the FLA path.
+
 ## Use this repository as a template
 
 Keep model identity and composition in `src/mlite_k3/`, expose a single explicit
