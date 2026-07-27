@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import pytest
 import torch
+import torch.nn as nn
 
 from mlite_k3.lite.checkpoint import (
     K3WeightSpec,
     audit_k3_weight_index,
     get_hf_weight,
+    load_weights_from_reader,
     parse_k3_quantization_metadata,
 )
 
@@ -305,3 +307,89 @@ def test_k3_weight_spec_roundtrips_dequantized_expert_layout():
         restored["language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight"],
         up,
     )
+
+
+class _TinyExpert(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.gate_up = nn.Linear(32, 6, bias=False, dtype=torch.bfloat16)
+
+
+class _TinyMoe(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.experts = nn.ModuleList([_TinyExpert()])
+
+
+class _TinyLayer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.moe = _TinyMoe()
+
+
+class _TinyExpertModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layers = nn.ModuleList([_TinyLayer()])
+
+
+class _ExpertConfig:
+    num_hidden_layers = 1
+    first_k_dense_replace = 0
+    num_experts = 1
+
+    @staticmethod
+    def attention_type(layer_index: int) -> str:
+        assert layer_index == 0
+        return "kda"
+
+
+def test_streaming_loader_dequantizes_and_copies_one_tiny_expert():
+    low_codes = torch.tensor([0, 2, 4, 6, 8, 10, 12, 14], dtype=torch.uint8)
+    high_codes = torch.tensor([1, 3, 5, 7, 9, 11, 13, 15], dtype=torch.uint8)
+    packed_row = (low_codes | (high_codes << 4)).repeat(2)
+    packed = packed_row.repeat(3, 1)
+    scale = torch.full((3, 1), 127, dtype=torch.uint8)
+    prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
+    reader = _Reader(
+        {
+            f"{prefix}.w1.weight_packed": packed,
+            f"{prefix}.w1.weight_scale": scale,
+            f"{prefix}.w3.weight_packed": packed ^ 0x88,
+            f"{prefix}.w3.weight_scale": scale,
+        }
+    )
+    model = _TinyExpertModel()
+
+    loaded = load_weights_from_reader(model, reader, K3WeightSpec(_ExpertConfig()))
+
+    expected_gate = _independent_mxfp4_reference(packed, scale)
+    expected_up = _independent_mxfp4_reference(packed ^ 0x88, scale)
+    assert loaded == 1
+    assert torch.equal(
+        model.layers[0].moe.experts[0].gate_up.weight.float(),
+        torch.cat((expected_gate, expected_up), dim=0),
+    )
+
+
+def test_streaming_loader_fails_on_unmapped_native_parameter():
+    model = nn.Module()
+    model.register_parameter("unexpected", nn.Parameter(torch.zeros(1)))
+
+    with pytest.raises(KeyError, match="no K3 checkpoint mapping"):
+        load_weights_from_reader(model, _Reader({}), K3WeightSpec(_ExpertConfig()))
+
+
+def test_streaming_loader_fails_on_wrong_checkpoint_shape():
+    prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
+    reader = _Reader(
+        {
+            f"{prefix}.w1.weight": torch.zeros(3, 16),
+            f"{prefix}.w3.weight": torch.zeros(3, 16),
+        }
+    )
+
+    with pytest.raises(ValueError, match="shape mismatch"):
+        load_weights_from_reader(
+            _TinyExpertModel(), reader, K3WeightSpec(_ExpertConfig())
+        )

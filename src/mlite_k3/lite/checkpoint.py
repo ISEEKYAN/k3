@@ -319,6 +319,63 @@ def get_hf_weight(reader: Any, name: str) -> torch.Tensor:
     raise KeyError(f"checkpoint tensor {name!r} was not found")
 
 
+def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
+    base = model
+    seen: set[int] = set()
+    while isinstance(getattr(base, "module", None), torch.nn.Module):
+        if id(base) in seen:
+            break
+        seen.add(id(base))
+        base = base.module
+    return base
+
+
+def load_weights_from_reader(
+    model: torch.nn.Module,
+    reader: Any,
+    spec: K3WeightSpec,
+) -> int:
+    """Stream all native parameters from an already indexed reader."""
+    base = _unwrap_model(model)
+    mapping = spec.weight_map()
+    loaded = 0
+    with torch.no_grad():
+        for native_name, parameter in base.named_parameters():
+            hf_names = mapping.get(native_name)
+            if hf_names is None:
+                raise KeyError(
+                    f"native parameter {native_name!r} has no K3 checkpoint mapping"
+                )
+            hf_tensors = [get_hf_weight(reader, name) for name in hf_names]
+            tensor = spec.hf_to_native(native_name, hf_tensors)
+            if tensor.shape != parameter.shape:
+                raise ValueError(
+                    f"shape mismatch for {native_name!r}: checkpoint "
+                    f"{tuple(tensor.shape)} != model {tuple(parameter.shape)}"
+                )
+            parameter.copy_(tensor.to(device=parameter.device, dtype=parameter.dtype))
+            loaded += 1
+            del tensor, hf_tensors
+    return loaded
+
+
+def load_hf_weights(
+    model: torch.nn.Module,
+    path: str | Path,
+    config: Any,
+) -> K3CheckpointManifest:
+    """Validate metadata first, then stream the public checkpoint tensor-wise."""
+    manifest = inspect_hf_checkpoint(path)
+    from megatron.lite.primitive.ckpt.hf_weights import SafeTensorReader
+
+    # Deliberately use the one-shot reader API: each tensor's shard mapping is
+    # closed before the next tensor, so a 96-shard release is never retained by
+    # one process as a collection of open mmap handles.
+    reader = SafeTensorReader(str(path))
+    load_weights_from_reader(model, reader, K3WeightSpec(config))
+    return manifest
+
+
 def audit_k3_weight_index(
     index: Mapping[str, Any] | Mapping[str, str],
     *,
@@ -402,5 +459,7 @@ __all__ = [
     "audit_k3_weight_index",
     "get_hf_weight",
     "inspect_hf_checkpoint",
+    "load_hf_weights",
+    "load_weights_from_reader",
     "parse_k3_quantization_metadata",
 ]
