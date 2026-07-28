@@ -79,12 +79,13 @@ def test_kda_cuda_contract_calls_fla_chunk_kernel(monkeypatch):
     monkeypatch.setitem(sys.modules, "fla.ops", ModuleType("fla.ops"))
     monkeypatch.setitem(sys.modules, "fla.ops.kda", kda_module)
     q = torch.zeros(1, 2, 1, 2)
+    beta_logits = torch.tensor([[[-2.0], [2.0]]])
     result = _fla_chunk_kda(
         q,
         q,
         q,
         q,
-        torch.zeros(1, 2, 1),
+        beta_logits,
         a_log=torch.zeros(1),
         dt_bias=torch.zeros(2),
         lower_bound=-5.0,
@@ -94,11 +95,13 @@ def test_kda_cuda_contract_calls_fla_chunk_kernel(monkeypatch):
     assert torch.equal(result, torch.ones_like(q))
     assert calls[0]["use_qk_l2norm_in_kernel"] is True
     assert calls[0]["use_gate_in_kernel"] is True
-    assert calls[0]["use_beta_sigmoid_in_kernel"] is True
+    torch.testing.assert_close(calls[0]["beta"], torch.sigmoid(beta_logits))
+    assert "use_beta_sigmoid_in_kernel" not in calls[0]
     assert calls[0]["safe_gate"] is True
     assert calls[0]["lower_bound"] == -5.0
     assert calls[0]["scale"] == 2**-0.5
-    assert calls[0]["state_v_first"] is True
+    assert calls[0]["transpose_state_layout"] is True
+    assert "state_v_first" not in calls[0]
     assert calls[0]["dt_bias"].shape == (2,)
 
 

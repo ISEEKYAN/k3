@@ -88,7 +88,7 @@ def _fla_chunk_kda(
         k=k,
         v=v,
         g=gate_logits,
-        beta=beta_logits,
+        beta=torch.sigmoid(beta_logits),
         scale=scale,
         A_log=a_log,
         dt_bias=dt_bias,
@@ -96,10 +96,9 @@ def _fla_chunk_kda(
         output_final_state=False,
         use_qk_l2norm_in_kernel=True,
         use_gate_in_kernel=True,
-        use_beta_sigmoid_in_kernel=True,
         safe_gate=True,
         lower_bound=lower_bound,
-        state_v_first=True,
+        transpose_state_layout=True,
     )
     return output
 
