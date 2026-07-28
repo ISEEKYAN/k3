@@ -23,6 +23,10 @@ from megatron.lite.primitive.parallel import (
     build_pipeline_chunk_layout,
     scatter_to_sequence_parallel,
 )
+from megatron.lite.primitive.parallel.cp import (
+    zigzag_reconstruct_from_cp_parts,
+    zigzag_slice_for_cp,
+)
 
 from mlite_k3.config import K3Config
 from mlite_k3.lite.pipeline_state import (
@@ -171,10 +175,12 @@ class K3ParallelDecoderLayer(nn.Module):
         deterministic: bool,
     ):
         super().__init__()
+        self.ps = ps
         self.layer_index = layer_index
+        self.attention_type = config.attention_type(layer_index)
         self.attn_res_block_size = config.attn_res_block_size
         self.rms_norm_eps = config.rms_norm_eps
-        if config.attention_type(layer_index) == "kda":
+        if self.attention_type == "kda":
             self.self_attention: nn.Module = FullRankGatedDeltaNet(
                 hidden_size=config.hidden_size,
                 num_heads=config.kda_num_heads,
@@ -253,10 +259,33 @@ class K3ParallelDecoderLayer(nn.Module):
             )
             prefix_sum = None
 
-        attention_output = self.self_attention(
-            self.input_layernorm(hidden_states),
-            packed_seq_params=packed_seq_params,
-        )
+        attention_input = self.input_layernorm(hidden_states)
+        if self.ps.cp_size > 1 and self.attention_type == "kda":
+            from torch.distributed.nn.functional import all_gather
+
+            attention_parts = all_gather(
+                attention_input.contiguous(),
+                group=self.ps.cp_group,
+            )
+            full_attention_input = zigzag_reconstruct_from_cp_parts(
+                attention_parts,
+                seq_dim=0,
+            )
+            full_attention_output = self.self_attention(
+                full_attention_input,
+                packed_seq_params=packed_seq_params,
+            )
+            attention_output = zigzag_slice_for_cp(
+                full_attention_output,
+                self.ps.cp_rank,
+                self.ps.cp_size,
+                seq_dim=0,
+            )
+        else:
+            attention_output = self.self_attention(
+                attention_input,
+                packed_seq_params=packed_seq_params,
+            )
         prefix_sum = (
             attention_output if prefix_sum is None else prefix_sum + attention_output
         )
@@ -381,6 +410,13 @@ class K3ParallelModel(nn.Module):
             hidden_states = scatter_to_sequence_parallel(
                 self.embed_tokens(input_ids), self.ps
             )
+            if self.ps.cp_size > 1:
+                hidden_states = zigzag_slice_for_cp(
+                    hidden_states,
+                    self.ps.cp_rank,
+                    self.ps.cp_size,
+                    seq_dim=0,
+                )
             sequence, batch, hidden = hidden_states.shape
             block_residual = hidden_states.new_zeros(sequence * batch, 0, hidden)
         else:
@@ -421,6 +457,13 @@ class K3ParallelModel(nn.Module):
             output["logits"] = self.lm_head.gather(logits).transpose(0, 1).contiguous()
         else:
             labels_sb = labels.transpose(0, 1).contiguous()
+            if self.ps.cp_size > 1:
+                labels_sb = zigzag_slice_for_cp(
+                    labels_sb,
+                    self.ps.cp_rank,
+                    self.ps.cp_size,
+                    seq_dim=0,
+                )
             loss = vocab_parallel_cross_entropy(logits, labels_sb, self.ps.tp_group)
             if loss_mask is None:
                 output["loss"] = loss.mean()

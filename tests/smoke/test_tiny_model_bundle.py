@@ -87,10 +87,10 @@ def test_protocol_releases_pp_axis_but_still_requires_distributed_initialization
         )
 
 
-def test_protocol_keeps_unvalidated_cp_axis_fail_loud():
+def test_protocol_releases_cp_axis_but_requires_distributed_initialization():
     parallel = SimpleNamespace(tp=1, ep=1, etp=1, pp=1, cp=2)
 
-    with pytest.raises(NotImplementedError, match="'cp': 2"):
+    with pytest.raises(RuntimeError, match="distributed initialization"):
         build_model(
             _tiny_config(),
             impl_cfg=ImplConfig(

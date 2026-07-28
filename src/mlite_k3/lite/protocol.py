@@ -37,22 +37,11 @@ def _parallel_size(parallel: Any, name: str) -> int:
 
 
 def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
-    """Build the verified reference or distributed bundle.
-
-    Distributed axes remain fail-loud until their scheduler-backed validation
-    is published.
-    """
+    """Build the verified reference or distributed bundle."""
     dimensions = {
         name: _parallel_size(impl_cfg.parallel, name)
         for name in ("tp", "ep", "etp", "pp", "cp")
     }
-    blocked = {
-        name: size for name, size in dimensions.items() if name in {"cp"} and size != 1
-    }
-    if blocked:
-        raise NotImplementedError(
-            f"K3 distributed axes are not validated yet: {blocked}"
-        )
     if impl_cfg.optimizer is not None:
         raise NotImplementedError("K3 optimizer integration is not validated yet")
 
