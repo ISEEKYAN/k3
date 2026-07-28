@@ -88,6 +88,16 @@ class K3Config:
     def shared_expert_intermediate_size(self) -> int:
         return self.moe_intermediate_size * self.num_shared_experts
 
+    @property
+    def num_experts_per_tok(self) -> int:
+        """Shared MoE primitive compatibility alias."""
+        return self.num_experts_per_token
+
+    @property
+    def n_routed_experts(self) -> int:
+        """Shared sigmoid-router compatibility alias."""
+        return self.num_experts
+
     @staticmethod
     def ensure_text_only_inputs(
         *,
