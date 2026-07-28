@@ -2,14 +2,37 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
+from megatron.lite.model.protocol_utils import (
+    pack_r3_replay_mask,
+    pack_routed_experts,
+    router_replay_roots,
+    unpack_thd_forward_output,
+)
+
 from mlite_k3.config import K3Config
 from mlite_k3.model import K3Model
+
+if TYPE_CHECKING:
+    from megatron.lite.primitive.quantization.qat import QATSpec
+
+
+_K3_MXFP4_QAT_IGNORES = (
+    "embed_tokens",
+    "lm_head",
+    "router",
+    "shared_experts",
+    "self_attention",
+    "self_attention_res_proj",
+    "mlp",
+    "mlp_res_proj",
+    "output_attn_res_proj",
+)
 
 
 @dataclass(frozen=True)
@@ -22,6 +45,7 @@ class ImplConfig:
     use_deepep: bool = False
     deterministic: bool = False
     kda_cp_mode: str = "headwise"
+    qat: QATSpec | dict[str, Any] | None = None
 
 
 def build_model_config(source: str | Path | dict, **overrides) -> K3Config:
@@ -93,17 +117,34 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
             labels=batch.labels,
         )
 
+    chunks = [model]
+    from megatron.lite.primitive.quantization.qat import (
+        apply_qat_to_chunks,
+        normalize_qat_spec,
+    )
+
+    qat_spec = normalize_qat_spec(impl_cfg.qat)
+    if qat_spec.enabled and qat_spec.format == "mxfp4":
+        qat_spec = replace(
+            qat_spec,
+            ignore_patterns=tuple(
+                dict.fromkeys((*qat_spec.ignore_patterns, *_K3_MXFP4_QAT_IGNORES))
+            ),
+        )
+    qat_stats = apply_qat_to_chunks(chunks, qat_spec)
+
     validated_axes = tuple(name for name, size in dimensions.items() if size > 1)
     if impl_cfg.use_thd:
         validated_axes += ("thd",)
     return ModelBundle(
-        chunks=[model],
+        chunks=chunks,
         parallel_state=ps,
         forward_step=forward_step,
         extras={
             "model_cfg": model_cfg,
             "validated_scope": validated_scope,
             "validated_axes": validated_axes,
+            "qat": qat_stats,
         },
     )
 
@@ -112,4 +153,13 @@ def vocab_size(model_cfg: K3Config) -> int:
     return model_cfg.vocab_size
 
 
-__all__ = ["ImplConfig", "build_model", "build_model_config", "vocab_size"]
+__all__ = [
+    "ImplConfig",
+    "build_model",
+    "build_model_config",
+    "pack_r3_replay_mask",
+    "pack_routed_experts",
+    "router_replay_roots",
+    "unpack_thd_forward_output",
+    "vocab_size",
+]

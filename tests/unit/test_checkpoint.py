@@ -424,6 +424,49 @@ def test_tiny_mxfp4_load_plain_bf16_export_and_reload_is_bitwise():
     )
 
 
+def test_mxfp4_resync_export_only_packs_routed_expert_weights():
+    spec = K3WeightSpec(_ExpertConfig())
+    model = _TinyExpertModel()
+    prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
+
+    exported = dict(iter_hf_weights(model, spec, target="mxfp4"))
+
+    assert set(exported) == {
+        f"{prefix}.w1.weight_packed",
+        f"{prefix}.w1.weight_scale",
+        f"{prefix}.w3.weight_packed",
+        f"{prefix}.w3.weight_scale",
+    }
+    assert exported[f"{prefix}.w1.weight_packed"].dtype == torch.int8
+    assert exported[f"{prefix}.w1.weight_scale"].dtype == torch.uint8
+
+
+def test_qat_parametrized_checkpoint_load_and_export_use_logical_weight_names():
+    from megatron.lite.primitive.quantization.qat import (
+        QATSpec,
+        apply_qat_to_chunks,
+    )
+
+    model = _TinyExpertModel()
+    assert apply_qat_to_chunks([model], QATSpec(enabled=True, format="mxfp4")) == {
+        "quantized_modules": 1,
+        "skipped_ignored": 0,
+        "skipped_no_weight": 0,
+    }
+    spec = K3WeightSpec(_ExpertConfig())
+    prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
+    source = {
+        f"{prefix}.w1.weight": torch.randn(3, 32, dtype=torch.bfloat16),
+        f"{prefix}.w3.weight": torch.randn(3, 32, dtype=torch.bfloat16),
+    }
+
+    assert load_weights_from_reader(model, _Reader(source), spec) == 1
+    exported = dict(iter_hf_weights(model, spec))
+
+    assert torch.equal(exported[f"{prefix}.w1.weight"], source[f"{prefix}.w1.weight"])
+    assert torch.equal(exported[f"{prefix}.w3.weight"], source[f"{prefix}.w3.weight"])
+
+
 def test_streaming_loader_fails_on_unmapped_native_parameter():
     model = nn.Module()
     model.register_parameter("unexpected", nn.Parameter(torch.zeros(1)))
