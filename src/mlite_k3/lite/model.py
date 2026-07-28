@@ -335,6 +335,26 @@ class K3ParallelModel(nn.Module):
             input_tensor = input_tensor[0] if input_tensor else None
         self._input_tensor = input_tensor
 
+    def _apply(self, fn, recurse: bool = True):
+        model = super()._apply(fn, recurse=recurse)
+        # The official KDA decay state remains FP32 even when model weights and
+        # activations are converted to BF16. Reassert it after the outer model
+        # conversion because Torch/TE may replace Parameters during recursion.
+        for layer in self.layers:
+            attention = layer.self_attention
+            for name in ("A_log", "dt_bias"):
+                parameter = getattr(attention, name, None)
+                if parameter is not None and parameter.dtype != torch.float32:
+                    setattr(
+                        attention,
+                        name,
+                        nn.Parameter(
+                            parameter.detach().float(),
+                            requires_grad=parameter.requires_grad,
+                        ),
+                    )
+        return model
+
     def forward(
         self,
         *,

@@ -241,9 +241,9 @@ def main() -> None:
                 "block_residual_backward": block_backward,
             }
         )
-    logits_metrics = _metrics(
-        parallel_result["logits"],
-        reference_result["logits"],
+    log_probs_metrics = _metrics(
+        parallel_result["log_probs"],
+        reference_result["log_probs"],
         abs_tolerance=LOGITS_ABS_TOLERANCE,
     )
     result = {
@@ -258,7 +258,7 @@ def main() -> None:
             "cp": ps.cp_size,
         },
         "layers": layer_metrics,
-        "logits": logits_metrics,
+        "log_probs": log_probs_metrics,
         "loss_reference": reference_result["loss"].item(),
         "loss_parallel": parallel_result["loss"].item(),
         "loss_abs": abs(
@@ -267,7 +267,7 @@ def main() -> None:
     }
     if rank == 0:
         print("K3_EP_ETP_PARITY=" + json.dumps(result, sort_keys=True), flush=True)
-    parity_metrics = [logits_metrics]
+    parity_metrics = [log_probs_metrics]
     for layer in layer_metrics:
         parity_metrics.extend(
             (
