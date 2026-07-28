@@ -37,19 +37,17 @@ def _parallel_size(parallel: Any, name: str) -> int:
 
 
 def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
-    """Build the verified reference or tensor-parallel bundle.
+    """Build the verified reference or distributed bundle.
 
-    Distributed axes other than TP remain fail-loud until their
-    scheduler-backed validation is published.
+    Distributed axes remain fail-loud until their scheduler-backed validation
+    is published.
     """
     dimensions = {
         name: _parallel_size(impl_cfg.parallel, name)
         for name in ("tp", "ep", "etp", "pp", "cp")
     }
     blocked = {
-        name: size
-        for name, size in dimensions.items()
-        if name in {"pp", "cp"} and size != 1
+        name: size for name, size in dimensions.items() if name in {"cp"} and size != 1
     }
     if blocked:
         raise NotImplementedError(
@@ -64,10 +62,12 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
     from megatron.lite.primitive.parallel import ParallelState, init_parallel
 
     dtype = getattr(torch, impl_cfg.dtype)
-    use_distributed_model = impl_cfg.device != "cpu" or dimensions["tp"] > 1
+    use_distributed_model = impl_cfg.device != "cpu" or any(
+        size > 1 for size in dimensions.values()
+    )
     if use_distributed_model:
         if not torch.distributed.is_initialized():
-            raise RuntimeError("K3 TP model requires torch.distributed initialization")
+            raise RuntimeError("K3 distributed model requires torch.distributed initialization")
         from mlite_k3.lite.model import K3ParallelModel
 
         ps = init_parallel(impl_cfg.parallel)

@@ -20,10 +20,15 @@ from megatron.lite.primitive.parallel import (
     RowParallelLinear,
     VocabParallelEmbedding,
     VocabParallelOutput,
+    build_pipeline_chunk_layout,
     scatter_to_sequence_parallel,
 )
 
 from mlite_k3.config import K3Config
+from mlite_k3.lite.pipeline_state import (
+    _pack_pipeline_state,
+    _unpack_pipeline_state,
+)
 from mlite_k3.model import _apply_attention_residual
 from mlite_k3.primitive.kda import kda
 
@@ -81,7 +86,9 @@ class ParallelSITUMlp(nn.Module):
 class ParallelLatentMoE(nn.Module):
     """K3 latent projection around the shared router/dispatcher/Experts chain."""
 
-    def __init__(self, config: K3Config, ps: ParallelState, *, use_deepep: bool = False):
+    def __init__(
+        self, config: K3Config, ps: ParallelState, *, use_deepep: bool = False
+    ):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.router = SigmoidTopKRouter(config, ps, compute_aux_loss=False)
@@ -249,7 +256,9 @@ class K3ParallelDecoderLayer(nn.Module):
             self.input_layernorm(hidden_states),
             packed_seq_params=packed_seq_params,
         )
-        prefix_sum = attention_output if prefix_sum is None else prefix_sum + attention_output
+        prefix_sum = (
+            attention_output if prefix_sum is None else prefix_sum + attention_output
+        )
         mlp_input = _apply_attention_residual(
             prefix_sum.reshape(-1, hidden),
             block_residual,
@@ -258,7 +267,9 @@ class K3ParallelDecoderLayer(nn.Module):
             variance_epsilon=self.rms_norm_eps,
         ).view(sequence, batch, hidden)
         mlp_input = self.post_attention_layernorm(mlp_input)
-        mlp_output = self.moe(mlp_input) if self.moe is not None else self.mlp(mlp_input)
+        mlp_output = (
+            self.moe(mlp_input) if self.moe is not None else self.mlp(mlp_input)
+        )
         return prefix_sum + mlp_output, block_residual
 
 
@@ -276,12 +287,19 @@ class K3ParallelModel(nn.Module):
         self.config = config
         self.ps = ps
         self.rms_norm_eps = config.rms_norm_eps
-        self.embed_tokens = VocabParallelEmbedding(
-            config.vocab_size,
-            config.hidden_size,
-            ps,
-            deterministic=deterministic,
-        )
+        self._input_tensor: torch.Tensor | None = None
+        layout = build_pipeline_chunk_layout(config.num_hidden_layers, ps)
+        self.layer_indices = layout.layer_indices
+        self.pre_process = layout.has_embed
+        self.post_process = layout.has_head
+        self.embed_tokens: VocabParallelEmbedding | None = None
+        if self.pre_process:
+            self.embed_tokens = VocabParallelEmbedding(
+                config.vocab_size,
+                config.hidden_size,
+                ps,
+                deterministic=deterministic,
+            )
         self.layers = nn.ModuleList(
             [
                 K3ParallelDecoderLayer(
@@ -292,35 +310,75 @@ class K3ParallelModel(nn.Module):
                     use_deepep=use_deepep,
                     deterministic=deterministic,
                 )
-                for index in range(config.num_hidden_layers)
+                for index in self.layer_indices
             ]
         )
-        self.output_attn_res_norm = te.RMSNorm(
-            config.hidden_size,
-            eps=config.rms_norm_eps,
-        )
-        self.output_attn_res_proj = nn.Linear(config.hidden_size, 1, bias=False)
-        self.norm = te.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.lm_head = VocabParallelOutput(config.vocab_size, config.hidden_size, ps)
+        self.output_attn_res_norm: nn.Module | None = None
+        self.output_attn_res_proj: nn.Linear | None = None
+        self.norm: nn.Module | None = None
+        self.lm_head: VocabParallelOutput | None = None
+        if self.post_process:
+            self.output_attn_res_norm = te.RMSNorm(
+                config.hidden_size,
+                eps=config.rms_norm_eps,
+            )
+            self.output_attn_res_proj = nn.Linear(config.hidden_size, 1, bias=False)
+            self.norm = te.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.lm_head = VocabParallelOutput(
+                config.vocab_size, config.hidden_size, ps
+            )
+
+    def set_input_tensor(self, input_tensor) -> None:
+        if isinstance(input_tensor, list):
+            if len(input_tensor) > 1:
+                raise ValueError("K3ParallelModel expects one folded pipeline tensor")
+            input_tensor = input_tensor[0] if input_tensor else None
+        self._input_tensor = input_tensor
 
     def forward(
         self,
         *,
-        input_ids: torch.Tensor,
+        input_ids: torch.Tensor | None = None,
+        hidden_states: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
         packed_seq_params=None,
     ) -> dict[str, torch.Tensor]:
-        if input_ids.ndim != 2:
-            raise ValueError("TP path currently requires dense [batch, sequence] input_ids")
-        hidden_states = scatter_to_sequence_parallel(self.embed_tokens(input_ids), self.ps)
-        sequence, batch, hidden = hidden_states.shape
-        block_residual = hidden_states.new_zeros(sequence * batch, 0, hidden)
+        if self.pre_process:
+            if input_ids is None or input_ids.ndim != 2:
+                raise ValueError(
+                    "K3 embedding stage requires dense [batch, sequence] input_ids"
+                )
+            assert self.embed_tokens is not None
+            hidden_states = scatter_to_sequence_parallel(
+                self.embed_tokens(input_ids), self.ps
+            )
+            sequence, batch, hidden = hidden_states.shape
+            block_residual = hidden_states.new_zeros(sequence * batch, 0, hidden)
+        else:
+            if hidden_states is None:
+                hidden_states = self._input_tensor
+            if hidden_states is None:
+                raise ValueError("K3 non-first pipeline stage requires an input tensor")
+            hidden_states, block_residual = _unpack_pipeline_state(
+                hidden_states,
+                hidden_size=self.config.hidden_size,
+            )
+            sequence, batch, hidden = hidden_states.shape
         for layer in self.layers:
             hidden_states, block_residual = layer(
                 hidden_states,
                 block_residual,
                 packed_seq_params=packed_seq_params,
             )
+        if not self.post_process:
+            return {
+                "hidden_states": _pack_pipeline_state(hidden_states, block_residual)
+            }
+
+        assert self.output_attn_res_proj is not None
+        assert self.output_attn_res_norm is not None
+        assert self.norm is not None
+        assert self.lm_head is not None
         hidden_states = _apply_attention_residual(
             hidden_states.reshape(-1, hidden),
             block_residual,
