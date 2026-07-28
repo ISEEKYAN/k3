@@ -25,6 +25,8 @@ MEASURE_STEPS = 3
 
 
 def _config(sequence_length: int) -> K3Config:
+    num_experts = int(os.environ.get("K3_NUM_EXPERTS", "8"))
+    num_experts_per_token = int(os.environ.get("K3_NUM_EXPERTS_PER_TOKEN", "2"))
     return K3Config(
         hidden_size=256,
         num_hidden_layers=2,
@@ -47,8 +49,8 @@ def _config(sequence_length: int) -> K3Config:
         first_k_dense_replace=1,
         moe_intermediate_size=128,
         routed_expert_hidden_size=128,
-        num_experts=8,
-        num_experts_per_token=2,
+        num_experts=num_experts,
+        num_experts_per_token=num_experts_per_token,
         num_shared_experts=2,
     )
 
@@ -200,7 +202,11 @@ def _router_margin(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     ordered = scores.sort(dim=-1, descending=True).values
     top1_top2 = ordered[..., 0] - ordered[..., 1]
-    decision_boundary = ordered[..., topk - 1] - ordered[..., topk]
+    decision_boundary = (
+        ordered[..., topk - 1] - ordered[..., topk]
+        if topk < ordered.shape[-1]
+        else torch.zeros_like(ordered[..., 0])
+    )
     return top1_top2, decision_boundary
 
 
@@ -405,6 +411,8 @@ def main() -> None:
                 "phase": "A",
                 "parallel": {"tp": 1, "ep": 1, "etp": 1, "pp": 1, "cp": 1},
                 "sequence_length": sequence_length,
+                "num_experts": config.num_experts,
+                "num_experts_per_token": config.num_experts_per_token,
                 "step_ms": step_ms,
                 "peak_allocated_bytes_per_rank": [peak_allocated],
                 "peak_reserved_bytes_per_rank": [peak_reserved],
@@ -678,6 +686,8 @@ def main() -> None:
             "parallel": {"tp": 2, "ep": 2, "etp": 1, "pp": 1, "cp": 2},
             "kda_cp_mode": "headwise",
             "sequence_length": sequence_length,
+            "num_experts": config.num_experts,
+            "num_experts_per_token": config.num_experts_per_token,
             "step_ms_slowest_rank": step_tensor.item(),
             "peak_allocated_bytes_per_rank": allocated_by_rank,
             "peak_reserved_bytes_per_rank": reserved_by_rank,
