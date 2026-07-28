@@ -99,3 +99,18 @@ def test_protocol_keeps_unvalidated_cp_axis_fail_loud():
                 dtype="float32",
             ),
         )
+
+
+def test_protocol_releases_thd_axis_but_requires_distributed_initialization():
+    parallel = SimpleNamespace(tp=1, ep=1, etp=1, pp=1, cp=1)
+
+    with pytest.raises(RuntimeError, match="distributed initialization"):
+        build_model(
+            _tiny_config(),
+            impl_cfg=ImplConfig(
+                parallel=parallel,
+                device="cpu",
+                dtype="float32",
+                use_thd=True,
+            ),
+        )

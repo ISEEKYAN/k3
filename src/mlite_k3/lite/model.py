@@ -29,6 +29,7 @@ from mlite_k3.lite.pipeline_state import (
     _pack_pipeline_state,
     _unpack_pipeline_state,
 )
+from mlite_k3.lite.thd_contract import validate_thd_inputs
 from mlite_k3.model import _apply_attention_residual
 from mlite_k3.primitive.kda import kda
 
@@ -361,12 +362,20 @@ class K3ParallelModel(nn.Module):
         input_ids: torch.Tensor | None = None,
         hidden_states: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
+        loss_mask: torch.Tensor | None = None,
         packed_seq_params=None,
     ) -> dict[str, torch.Tensor]:
         if self.pre_process:
             if input_ids is None or input_ids.ndim != 2:
                 raise ValueError(
                     "K3 embedding stage requires dense [batch, sequence] input_ids"
+                )
+            if packed_seq_params is not None:
+                validate_thd_inputs(
+                    input_ids,
+                    labels,
+                    loss_mask,
+                    packed_seq_params,
                 )
             assert self.embed_tokens is not None
             hidden_states = scatter_to_sequence_parallel(
@@ -413,7 +422,11 @@ class K3ParallelModel(nn.Module):
         else:
             labels_sb = labels.transpose(0, 1).contiguous()
             loss = vocab_parallel_cross_entropy(logits, labels_sb, self.ps.tp_group)
-            output["loss"] = loss.mean()
+            if loss_mask is None:
+                output["loss"] = loss.mean()
+            else:
+                mask_sb = loss_mask.transpose(0, 1).to(dtype=loss.dtype)
+                output["loss"] = (loss * mask_sb).sum() / mask_sb.sum().clamp_min(1)
             output["log_probs"] = (-loss).transpose(0, 1).contiguous()
         return output
 

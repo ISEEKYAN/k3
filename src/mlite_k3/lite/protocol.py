@@ -53,8 +53,6 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
         raise NotImplementedError(
             f"K3 distributed axes are not validated yet: {blocked}"
         )
-    if impl_cfg.use_thd:
-        raise NotImplementedError("K3 THD execution is not validated yet")
     if impl_cfg.optimizer is not None:
         raise NotImplementedError("K3 optimizer integration is not validated yet")
 
@@ -62,8 +60,10 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
     from megatron.lite.primitive.parallel import ParallelState, init_parallel
 
     dtype = getattr(torch, impl_cfg.dtype)
-    use_distributed_model = impl_cfg.device != "cpu" or any(
-        size > 1 for size in dimensions.values()
+    use_distributed_model = (
+        impl_cfg.device != "cpu"
+        or impl_cfg.use_thd
+        or any(size > 1 for size in dimensions.values())
     )
     if use_distributed_model:
         if not torch.distributed.is_initialized():
@@ -76,7 +76,7 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
         model = K3ParallelModel(
             model_cfg,
             ps,
-            use_thd=False,
+            use_thd=impl_cfg.use_thd,
             use_deepep=impl_cfg.use_deepep,
             deterministic=impl_cfg.deterministic,
         ).to(device=impl_cfg.device, dtype=dtype)
@@ -85,19 +85,35 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
         ps = ParallelState()
         model = K3Model(model_cfg).to(device=impl_cfg.device, dtype=dtype)
         validated_scope = "single_rank_reference"
+
+    def forward_step(chunk, batch):
+        if impl_cfg.use_thd:
+            from megatron.lite.model.protocol_utils import pack_thd_forward_kwargs
+
+            kwargs = pack_thd_forward_kwargs(chunk, batch)
+            kwargs["packed_seq_params"].total_tokens = kwargs["input_ids"].shape[1]
+            return chunk(
+                input_ids=kwargs["input_ids"],
+                labels=kwargs["labels"],
+                loss_mask=kwargs["loss_mask"],
+                packed_seq_params=kwargs["packed_seq_params"],
+            )
+        return chunk(
+            input_ids=batch.input_ids,
+            labels=batch.labels,
+        )
+
+    validated_axes = tuple(name for name, size in dimensions.items() if size > 1)
+    if impl_cfg.use_thd:
+        validated_axes += ("thd",)
     return ModelBundle(
         chunks=[model],
         parallel_state=ps,
-        forward_step=lambda chunk, batch: chunk(
-            input_ids=batch.input_ids,
-            labels=batch.labels,
-        ),
+        forward_step=forward_step,
         extras={
             "model_cfg": model_cfg,
             "validated_scope": validated_scope,
-            "validated_axes": tuple(
-                name for name, size in dimensions.items() if size > 1
-            ),
+            "validated_axes": validated_axes,
         },
     )
 
