@@ -10,6 +10,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 from torch.distributed.elastic.multiprocessing.errors import record
 
 from megatron.lite.primitive.parallel import init_parallel
@@ -149,6 +150,8 @@ def _capture_layers(model: K3ParallelModel):
 
 def _capture_attention_and_router(model: K3ParallelModel):
     attention_outputs: list[torch.Tensor] = []
+    router_inputs: list[torch.Tensor] = []
+    router_logits: list[torch.Tensor] = []
     router_indices: list[torch.Tensor] = []
 
     def capture_attention(_module, _inputs, output) -> None:
@@ -156,9 +159,14 @@ def _capture_attention_and_router(model: K3ParallelModel):
         attention_outputs.append(output)
 
     def capture_router(_module, inputs, output) -> None:
+        router_input = inputs[0]
         indices = output[1]
-        tokens = inputs[0].shape[0]
+        tokens = router_input.shape[0]
+        router_inputs.append(router_input.view(tokens, 1, -1))
         router_indices.append(indices.view(tokens, 1, -1))
+
+    def capture_router_gate(_module, _inputs, output) -> None:
+        router_logits.append(output.view(output.shape[0], 1, output.shape[-1]))
 
     handles = [
         layer.self_attention.register_forward_hook(capture_attention)
@@ -169,7 +177,42 @@ def _capture_attention_and_router(model: K3ParallelModel):
         for layer in model.layers
         if layer.moe is not None
     )
-    return attention_outputs, router_indices, handles
+    handles.extend(
+        layer.moe.router.gate.register_forward_hook(capture_router_gate)
+        for layer in model.layers
+        if layer.moe is not None
+    )
+    return attention_outputs, router_inputs, router_logits, router_indices, handles
+
+
+def _router_modules(model: K3ParallelModel):
+    return [layer.moe.router for layer in model.layers if layer.moe is not None]
+
+
+def _selected_indices_by_expert(scores: torch.Tensor, topk: int) -> torch.Tensor:
+    """Match the shared router contract: select by score, order by expert id."""
+    selected = torch.topk(scores, topk, dim=-1, sorted=False).indices
+    return selected.sort(dim=-1).values
+
+
+def _router_margin(
+    scores: torch.Tensor, topk: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    ordered = scores.sort(dim=-1, descending=True).values
+    top1_top2 = ordered[..., 0] - ordered[..., 1]
+    decision_boundary = ordered[..., topk - 1] - ordered[..., topk]
+    return top1_top2, decision_boundary
+
+
+def _distribution(values: torch.Tensor) -> dict[str, float]:
+    values = values.detach().float().flatten()
+    if values.numel() == 0:
+        return {"min": 0.0, "median": 0.0, "max": 0.0}
+    return {
+        "min": values.min().item(),
+        "median": values.median().item(),
+        "max": values.max().item(),
+    }
 
 
 def _metrics(actual: torch.Tensor, reference: torch.Tensor) -> dict[str, float | int]:
@@ -292,9 +335,13 @@ def main() -> None:
     )
 
     captured, handles = _capture_layers(model)
-    attention_outputs, router_indices, diagnostic_handles = (
-        _capture_attention_and_router(model)
-    )
+    (
+        attention_outputs,
+        router_inputs,
+        router_logits,
+        router_indices,
+        diagnostic_handles,
+    ) = _capture_attention_and_router(model)
     output = _run_step(
         model,
         input_ids,
@@ -329,6 +376,26 @@ def main() -> None:
                     ],
                     "router_indices": [
                         indices.detach().cpu() for indices in router_indices
+                    ],
+                    "router_inputs": [
+                        router_input.detach().cpu() for router_input in router_inputs
+                    ],
+                    "router_logits": [
+                        logits.detach().cpu() for logits in router_logits
+                    ],
+                    "router_fp32_logits": [
+                        F.linear(
+                            router_input[:, 0].float(),
+                            router.gate.weight.float(),
+                        )
+                        .view(router_input.shape[0], 1, -1)
+                        .detach()
+                        .cpu()
+                        for router_input, router in zip(
+                            router_inputs,
+                            _router_modules(model),
+                            strict=True,
+                        )
                     ],
                     "log_probs": output["log_probs"].detach().cpu(),
                 },
@@ -376,15 +443,13 @@ def main() -> None:
                 ),
             }
             layer_metrics.append(metrics)
-        log_probs = _metrics(
-            output["log_probs"],
-            zigzag_slice_for_cp(
-                reference["log_probs"],
-                ps.cp_rank,
-                ps.cp_size,
-                seq_dim=1,
-            ),
+        expected_log_probs = zigzag_slice_for_cp(
+            reference["log_probs"],
+            ps.cp_rank,
+            ps.cp_size,
+            seq_dim=1,
         )
+        log_probs = _metrics(output["log_probs"], expected_log_probs)
         attention_metrics = []
         for index, (attention, expected) in enumerate(
             zip(attention_outputs, reference["attention"], strict=True)
@@ -402,17 +467,201 @@ def main() -> None:
             }
             attention_metrics.append(metrics)
         router_metrics = []
-        for index, (indices, expected) in enumerate(
-            zip(router_indices, reference["router_indices"], strict=True)
+        global_token_ids = _expected_layer_shard(
+            torch.arange(sequence_length, device=device).view(-1, 1, 1),
+            ps,
+        ).flatten()
+        cp_global_token_ids = zigzag_slice_for_cp(
+            torch.arange(sequence_length, device=device),
+            ps.cp_rank,
+            ps.cp_size,
+            seq_dim=0,
+        )
+        for index, (
+            router_input,
+            logits,
+            indices,
+            expected_input,
+            expected_logits,
+            expected_fp32_logits,
+            expected_indices,
+            router,
+        ) in enumerate(
+            zip(
+                router_inputs,
+                router_logits,
+                router_indices,
+                reference["router_inputs"],
+                reference["router_logits"],
+                reference["router_fp32_logits"],
+                reference["router_indices"],
+                _router_modules(model),
+                strict=True,
+            )
         ):
-            expected = _expected_layer_shard(expected, ps)
-            mismatches = indices != expected
+            expected_input = _expected_layer_shard(expected_input, ps)
+            expected_logits = _expected_layer_shard(expected_logits, ps)
+            expected_fp32_logits = _expected_layer_shard(
+                expected_fp32_logits,
+                ps,
+            )
+            expected_indices = _expected_layer_shard(expected_indices, ps)
+            fp32_logits = F.linear(
+                router_input[:, 0].float(),
+                router.gate.weight.float(),
+            ).view(router_input.shape[0], 1, -1)
+            baseline_scores = torch.sigmoid(expected_logits.float())
+            parallel_scores = torch.sigmoid(logits.float())
+            baseline_fp32_scores = torch.sigmoid(expected_fp32_logits)
+            parallel_fp32_scores = torch.sigmoid(fp32_logits)
+            topk = indices.shape[-1]
+            if not torch.equal(
+                _selected_indices_by_expert(baseline_scores, topk),
+                expected_indices,
+            ):
+                raise AssertionError(
+                    "captured A router indices do not match its logits"
+                )
+            if not torch.equal(
+                _selected_indices_by_expert(parallel_scores, topk),
+                indices,
+            ):
+                raise AssertionError(
+                    "captured E router indices do not match its logits"
+                )
+
+            fp32_expected_indices = _selected_indices_by_expert(
+                baseline_fp32_scores,
+                topk,
+            )
+            fp32_indices = _selected_indices_by_expert(
+                parallel_fp32_scores,
+                topk,
+            )
+            mismatches = indices != expected_indices
+            mismatched_tokens = mismatches.any(dim=-1).flatten()
+            set_changed = (
+                (indices.sort(dim=-1).values != expected_indices.sort(dim=-1).values)
+                .any(dim=-1)
+                .flatten()
+            )
+            fp32_mismatches = fp32_indices != fp32_expected_indices
+            fp32_mismatched_tokens = fp32_mismatches.any(dim=-1).flatten()
+            fp32_set_changed = (
+                (
+                    fp32_indices.sort(dim=-1).values
+                    != fp32_expected_indices.sort(dim=-1).values
+                )
+                .any(dim=-1)
+                .flatten()
+            )
+            baseline_top12, baseline_boundary = _router_margin(
+                baseline_scores,
+                topk,
+            )
+            parallel_top12, parallel_boundary = _router_margin(
+                parallel_scores,
+                topk,
+            )
+            flip_records = []
+            for local_token in mismatched_tokens.nonzero().flatten().tolist():
+                global_token = int(global_token_ids[local_token].item())
+                log_prob_position = int(
+                    (cp_global_token_ids == global_token).nonzero().item()
+                )
+                baseline_order = baseline_scores[local_token, 0].sort(descending=True)
+                parallel_order = parallel_scores[local_token, 0].sort(descending=True)
+                baseline_scale = (
+                    torch.finfo(torch.bfloat16).eps
+                    * baseline_order.values[: topk + 1].abs().max()
+                )
+                parallel_scale = (
+                    torch.finfo(torch.bfloat16).eps
+                    * parallel_order.values[: topk + 1].abs().max()
+                )
+                input_difference = (
+                    router_input[local_token].float()
+                    - expected_input[local_token].float()
+                ).abs()
+                flip_records.append(
+                    {
+                        "global_token": global_token,
+                        "baseline_indices": expected_indices[local_token, 0].tolist(),
+                        "parallel_indices": indices[local_token, 0].tolist(),
+                        "baseline_fp32_indices": fp32_expected_indices[
+                            local_token, 0
+                        ].tolist(),
+                        "parallel_fp32_indices": fp32_indices[local_token, 0].tolist(),
+                        "baseline_top_scores": baseline_order.values[
+                            : topk + 1
+                        ].tolist(),
+                        "parallel_top_scores": parallel_order.values[
+                            : topk + 1
+                        ].tolist(),
+                        "baseline_top1_top2_margin": baseline_top12[
+                            local_token, 0
+                        ].item(),
+                        "parallel_top1_top2_margin": parallel_top12[
+                            local_token, 0
+                        ].item(),
+                        "baseline_topk_boundary_margin": baseline_boundary[
+                            local_token, 0
+                        ].item(),
+                        "parallel_topk_boundary_margin": parallel_boundary[
+                            local_token, 0
+                        ].item(),
+                        "baseline_bf16_effective_score_scale": (baseline_scale.item()),
+                        "parallel_bf16_effective_score_scale": (parallel_scale.item()),
+                        "router_input_max_abs": input_difference.max().item(),
+                        "router_input_mean_abs": input_difference.mean().item(),
+                        "router_logit_max_abs": (
+                            logits[local_token].float()
+                            - expected_logits[local_token].float()
+                        )
+                        .abs()
+                        .max()
+                        .item(),
+                        "log_prob_abs": (
+                            output["log_probs"][0, log_prob_position].float()
+                            - expected_log_probs[0, log_prob_position].float()
+                        )
+                        .abs()
+                        .item(),
+                    }
+                )
+            input_metrics = _metrics(router_input, expected_input)
             router_metrics.append(
                 {
                     "moe_index": index,
+                    "rank": rank,
                     "mismatched_indices": int(mismatches.sum().item()),
                     "total_indices": mismatches.numel(),
                     "ratio_mismatched": mismatches.float().mean().item(),
+                    "mismatched_global_tokens": global_token_ids[
+                        mismatched_tokens
+                    ].tolist(),
+                    "set_changed_global_tokens": global_token_ids[set_changed].tolist(),
+                    "fp32_mismatched_indices": int(fp32_mismatches.sum().item()),
+                    "fp32_mismatched_global_tokens": global_token_ids[
+                        fp32_mismatched_tokens
+                    ].tolist(),
+                    "fp32_set_changed_global_tokens": global_token_ids[
+                        fp32_set_changed
+                    ].tolist(),
+                    "router_input": input_metrics,
+                    "flipped_baseline_top1_top2": _distribution(
+                        baseline_top12.flatten()[mismatched_tokens]
+                    ),
+                    "flipped_baseline_topk_boundary": _distribution(
+                        baseline_boundary.flatten()[mismatched_tokens]
+                    ),
+                    "flipped_parallel_top1_top2": _distribution(
+                        parallel_top12.flatten()[mismatched_tokens]
+                    ),
+                    "flipped_parallel_topk_boundary": _distribution(
+                        parallel_boundary.flatten()[mismatched_tokens]
+                    ),
+                    "flip_records": flip_records,
                 }
             )
 
@@ -420,8 +669,10 @@ def main() -> None:
         dist.all_reduce(step_tensor, op=dist.ReduceOp.MAX)
         allocated_by_rank = [None] * world_size
         reserved_by_rank = [None] * world_size
+        router_by_rank = [None] * world_size
         dist.all_gather_object(allocated_by_rank, peak_allocated)
         dist.all_gather_object(reserved_by_rank, peak_reserved)
+        dist.all_gather_object(router_by_rank, router_metrics)
         result = {
             "phase": "E",
             "parallel": {"tp": 2, "ep": 2, "etp": 1, "pp": 1, "cp": 2},
@@ -432,7 +683,7 @@ def main() -> None:
             "peak_reserved_bytes_per_rank": reserved_by_rank,
             "layers": layer_metrics,
             "attention": attention_metrics,
-            "router": router_metrics,
+            "router": router_by_rank,
             "log_probs": log_probs,
         }
         baseline_result = json.loads(
@@ -456,6 +707,9 @@ def main() -> None:
                 f"K3 combined attention parity exceeded tolerance: {result}"
             )
         if rank == 0:
+            (artifact_dir / "combined_result.json").write_text(
+                json.dumps(result, sort_keys=True)
+            )
             print("K3_COMBINED_SMOKE=" + json.dumps(result, sort_keys=True), flush=True)
 
     dist.barrier()
