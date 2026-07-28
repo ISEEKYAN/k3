@@ -160,15 +160,20 @@ def _capture_attention_and_router(model: K3ParallelModel):
         output.retain_grad()
         attention_outputs.append(output)
 
-    def capture_router(_module, inputs, output) -> None:
+    def capture_router(module, inputs, output) -> None:
         router_input = inputs[0]
         indices = output[1]
         tokens = router_input.shape[0]
+        if module.router_dtype is not torch.float32:
+            raise AssertionError("K3 shared router must declare FP32 gating")
         router_inputs.append(router_input.view(tokens, 1, -1))
+        router_logits.append(
+            F.linear(
+                router_input.float(),
+                module.gate.weight.float(),
+            ).view(tokens, 1, -1)
+        )
         router_indices.append(indices.view(tokens, 1, -1))
-
-    def capture_router_gate(_module, _inputs, output) -> None:
-        router_logits.append(output.view(output.shape[0], 1, output.shape[-1]))
 
     handles = [
         layer.self_attention.register_forward_hook(capture_attention)
@@ -176,11 +181,6 @@ def _capture_attention_and_router(model: K3ParallelModel):
     ]
     handles.extend(
         layer.moe.router.register_forward_hook(capture_router)
-        for layer in model.layers
-        if layer.moe is not None
-    )
-    handles.extend(
-        layer.moe.router.gate.register_forward_hook(capture_router_gate)
         for layer in model.layers
         if layer.moe is not None
     )

@@ -93,7 +93,12 @@ class ParallelLatentMoE(nn.Module):
     ):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.router = SigmoidTopKRouter(config, ps, compute_aux_loss=False)
+        self.router = SigmoidTopKRouter(
+            config,
+            ps,
+            compute_aux_loss=False,
+            router_dtype=torch.float32,
+        )
         self.dispatcher = TokenDispatcher(
             config.num_experts,
             config.routed_expert_hidden_size,
