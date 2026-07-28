@@ -86,7 +86,7 @@ def test_kda_cuda_contract_calls_fla_chunk_kernel(monkeypatch):
         q,
         torch.zeros(1, 2, 1),
         a_log=torch.zeros(1),
-        dt_bias=torch.zeros(1, 2),
+        dt_bias=torch.zeros(2),
         lower_bound=-5.0,
         scale=2**-0.5,
     )
@@ -99,6 +99,7 @@ def test_kda_cuda_contract_calls_fla_chunk_kernel(monkeypatch):
     assert calls[0]["lower_bound"] == -5.0
     assert calls[0]["scale"] == 2**-0.5
     assert calls[0]["state_v_first"] is True
+    assert calls[0]["dt_bias"].shape == (2,)
 
 
 def test_kda_cuda_contract_does_not_call_flash_kda_directly(monkeypatch):
@@ -124,7 +125,7 @@ def test_kda_cuda_contract_does_not_call_flash_kda_directly(monkeypatch):
             q,
             torch.zeros(1, 2, 1),
             a_log=torch.zeros(1),
-            dt_bias=torch.zeros(1, 2),
+            dt_bias=torch.zeros(2),
             lower_bound=-5.0,
             scale=2**-0.5,
         )

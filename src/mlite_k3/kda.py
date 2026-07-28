@@ -177,15 +177,28 @@ class KDA(nn.Module):
         beta = self.b_proj(x)
         kda_kwargs = {
             "a_log": self.A_log,
-            "dt_bias": self.dt_bias.view(self.heads, self.head_dim),
             "lower_bound": self.lower_bound,
             "scale": self.head_dim**-0.5,
         }
         if x.is_cuda:
-            output = _fla_chunk_kda(q, k, v, feature_gate, beta, **kda_kwargs)
+            output = _fla_chunk_kda(
+                q,
+                k,
+                v,
+                feature_gate,
+                beta,
+                dt_bias=self.dt_bias,
+                **kda_kwargs,
+            )
         else:
             output, _ = kda_recurrent_reference(
-                q, k, v, feature_gate, beta, **kda_kwargs
+                q,
+                k,
+                v,
+                feature_gate,
+                beta,
+                dt_bias=self.dt_bias.view(self.heads, self.head_dim),
+                **kda_kwargs,
             )
         output_gate = torch.sigmoid(self._heads(self.g_proj(x)))
         output = self.o_norm(output) * output_gate
