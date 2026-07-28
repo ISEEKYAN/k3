@@ -69,18 +69,23 @@ def main() -> None:
     dist.init_process_group("nccl")
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    if world_size != 8:
-        raise RuntimeError("K3 R3/QAT smoke requires eight ranks")
+    if world_size not in (1, 8):
+        raise RuntimeError("K3 R3/QAT smoke requires one or eight ranks")
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
     sequence_length = int(os.environ.get("K3_SEQUENCE_LENGTH", "256"))
+    parallel = (
+        ParallelConfig(tp=1, ep=1, etp=1, pp=1, cp=1)
+        if world_size == 1
+        else ParallelConfig(tp=2, ep=2, etp=1, pp=1, cp=2)
+    )
 
     torch.manual_seed(20260728)
     bundle = build_model(
         _config(sequence_length),
         impl_cfg=ImplConfig(
-            parallel=ParallelConfig(tp=2, ep=2, etp=1, pp=1, cp=2),
+            parallel=parallel,
             device=f"cuda:{local_rank}",
             dtype="bfloat16",
             qat={"enabled": True, "format": "mxfp4"},
@@ -160,7 +165,10 @@ def main() -> None:
     if rank == 0:
         result = {
             "world_size": world_size,
-            "parallel": {"tp": 2, "ep": 2, "etp": 1, "pp": 1, "cp": 2},
+            "parallel": {
+                name: int(getattr(parallel, name))
+                for name in ("tp", "ep", "etp", "pp", "cp")
+            },
             "sequence_length": sequence_length,
             "recorded_elements_per_rank": [
                 int(minimum[0].item()),
