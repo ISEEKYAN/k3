@@ -46,8 +46,6 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
         name: _parallel_size(impl_cfg.parallel, name)
         for name in ("tp", "ep", "etp", "pp", "cp")
     }
-    if dimensions["tp"] != 1:
-        raise NotImplementedError("K3 TP execution is not validated yet")
     blocked = {
         name: size
         for name, size in dimensions.items()
