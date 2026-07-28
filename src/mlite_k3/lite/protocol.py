@@ -67,7 +67,9 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
     )
     if use_distributed_model:
         if not torch.distributed.is_initialized():
-            raise RuntimeError("K3 distributed model requires torch.distributed initialization")
+            raise RuntimeError(
+                "K3 distributed model requires torch.distributed initialization"
+            )
         from mlite_k3.lite.model import K3ParallelModel
 
         ps = init_parallel(impl_cfg.parallel)
