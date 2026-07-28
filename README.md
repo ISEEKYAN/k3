@@ -175,13 +175,29 @@ inferred from the single-rank proxy.
 No later-stage capability is considered supported until its corresponding test
 has passed on the stated execution path.
 
+## First-release boundary
+
+The first release is limited to the readable reference implementation and
+reduced-layer, reduced-expert tiny-config proxy parity. Proxy parity remains
+not done until its independent, non-skipped evidence is published.
+
+Expert parallelism, context parallelism, THD sequences, pipeline parallelism,
+and short training are deferred and not done. They do not depend on a K3
+primitive change in Megatron Lite. Their unlock path is to implement and
+validate K3-owned sharding, parameter placement, state transfer, and
+communication primitives in this repository, then exercise them through
+scheduler-backed tests. No distributed or training claim is implied by the CPU
+reference path.
+
 ## Use this repository as a template
 
 Keep model identity and composition in `src/mlite_k3/`, expose a single explicit
 registration entry point, and keep fast CPU contracts in `tests/unit/`.
 Reusable KDA behavior belongs in the model-independent `kda.py`; gated-MLA and
 LatentMoE behavior belongs in `primitives.py`; `model.py` owns configuration
-mapping, layer scheduling, and model-specific composition.
+mapping, layer scheduling, and model-specific composition. K3-specific
+primitives remain self-contained in this repository and require no K3 changes
+to the Megatron Lite repository.
 
 When adding a capability, add the smallest failing test first and document only
 the behavior that the test actually exercises.

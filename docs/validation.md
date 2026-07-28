@@ -133,6 +133,11 @@ Synthetic round trips alone do not satisfy this stage.
 
 ### Stage 4: scheduled GPU paths
 
+**Deferred / not done in the first release.** Expert parallelism, context
+parallelism, THD sequences, pipeline parallelism, and short training require
+K3-owned sharding, parameter placement, state-transfer, and communication work
+in this repository. They do not depend on a K3 primitive PR in Megatron Lite.
+
 Run from a clean checkout using a pinned container and Megatron Lite revision.
 Each selected test must execute rather than skip, complete forward and backward,
 and assert the requested topology and communication path. The minimum matrix is:
