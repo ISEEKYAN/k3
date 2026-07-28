@@ -45,6 +45,18 @@ def test_protocol_exports_shared_zigzag_r3_contract():
     )
 
 
+def test_k3_parallel_kda_imports_against_latest_mlite():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[2] / "src/mlite_k3/primitive/kda_parallel.py"
+    ).read_text()
+
+    assert "FullRankGatedDeltaNet," not in source
+    assert "class _K3FullRankDeltaNet(nn.Module):" in source
+    assert "GatedDeltaNet._headwise_cp2hp" in source
+
+
 def test_mxfp4_qat_only_parametrizes_routed_expert_linears():
     bundle = build_model(
         _tiny_config(),
