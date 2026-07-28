@@ -69,6 +69,26 @@ real Megatron Lite registry. They do not cover model construction.
 
 ## Increasing-cost validation stages
 
+### Verified first-release checkpoint proxy
+
+The current single-rank CPU proxy is intentionally narrower than the complete
+Stage 2 and Stage 3 gates below. It retains one KDA layer, one gated-MLA layer,
+one LatentMoE layer, and two routed experts. It verifies:
+
+- exact coverage of every real tiny-model parameter by the public weight map,
+  including bias-free KDA depthwise convolutions;
+- six routed-expert projection weights through MXFP4 pack/dequant, with all
+  remaining parameters loaded through the unquantized path;
+- independent equation-level KDA and gated-MLA-plus-LatentMoE layer outputs;
+- maximum absolute differences of `0.0` for KDA,
+  `2.384185791015625e-07` for MLA plus MoE, and
+  `2.9802322387695312e-07` for final logits;
+- quantized load followed by plain Hugging Face export into a fresh model,
+  restoring every parameter and final logits bit-for-bit.
+
+This proxy does not verify the full-width release, gradients against the public
+model, distributed execution, GPU kernels, or short training.
+
 ### Stage 1: CPU model contracts
 
 Use a reduced text-only configuration that retains one KDA layer, one gated
@@ -126,6 +146,12 @@ and assert the requested topology and communication path. The minimum matrix is:
 
 If a proxy topology is used, report it as proxy evidence. It must not be
 described as a full-scale Kimi K3 run.
+
+Stage 4 is deferred and not done. Expert, context, tensor, and pipeline
+parallelism, THD sequences, and short training require the corresponding
+Megatron Lite shared-primitives and checkpoint-placement pull request before
+scheduler-backed validation can begin. FlashKDA direct dispatch is likewise a
+forward-only optional acceleration path and has not been validated.
 
 ## Evidence and publication rules
 

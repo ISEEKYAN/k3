@@ -13,8 +13,9 @@ gated-MLA layer schedule, Attention Residual composition, LatentMoE, and a
 single-rank Megatron Lite model protocol. The MoonViT vision encoder,
 distributed kernels, optimizer integration, and production checkpoint loading
 are not included yet. The repository does include a streaming-index audit and
-an MXFP4 routed-expert pair decoder, but it does not claim full-checkpoint
-loading. Unsupported multimodal, parallel, and optimizer inputs fail explicitly.
+an MXFP4 routed-expert pair decoder plus a real tiny-model load/export/reload
+proxy, but it does not claim full-checkpoint loading. Unsupported multimodal,
+parallel, and optimizer inputs fail explicitly.
 
 The first release targets the `KimiLinearForCausalLM` text backbone. MoonViT-V2
 and multimodal inputs are out of scope and must fail explicitly rather than
@@ -136,9 +137,28 @@ python -m pytest -q \
   tests/smoke/test_tiny_model_bundle.py
 ```
 
-These checks require no CUDA. GPU, distributed, checkpoint, and numerical
-parity claims will only be added after their corresponding non-skipped tests
-have run.
+These checks require no CUDA. The verified checkpoint and numerical scope is
+the reduced proxy below; GPU and distributed claims require their own
+non-skipped tests.
+
+## Verified first-release checkpoint proxy
+
+The single-rank CPU proxy retains one KDA layer, one gated-MLA layer,
+LatentMoE, and two routed experts. Six routed-expert projection weights use
+MXFP4 pairs; every other parameter follows the unquantized path.
+
+The proxy verifies complete native-parameter coverage, MXFP4 load into the real
+tiny model, independent KDA and MLA-plus-MoE layer equations, final logits, and
+plain Hugging Face export/reload. The two layer maximum absolute differences
+are `0.0` and `2.384185791015625e-07`; final-logit maximum absolute difference
+is `2.9802322387695312e-07`. Plain export/reload restores every parameter and
+the logits bit-for-bit.
+
+Expert, context, tensor, and pipeline parallelism, THD sequences, GPU kernels,
+and short training are deferred and have not been validated. They require the
+corresponding shared-primitives and checkpoint-placement pull request in
+Megatron Lite, followed by scheduler-backed tests. These paths must not be
+inferred from the single-rank proxy.
 
 ## The four-stage model-support workflow
 

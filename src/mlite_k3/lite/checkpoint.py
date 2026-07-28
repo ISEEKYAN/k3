@@ -393,7 +393,7 @@ def iter_hf_weights(
     model: torch.nn.Module,
     spec: K3WeightSpec,
 ):
-    """Yield plain HF tensors one native parameter at a time."""
+    """Yield plain BF16 HF tensors one native parameter at a time."""
     base = _unwrap_model(model)
     mapping = spec.weight_map()
     for native_name, parameter in base.named_parameters():
@@ -401,7 +401,7 @@ def iter_hf_weights(
             raise KeyError(
                 f"native parameter {native_name!r} has no K3 checkpoint mapping"
             )
-        tensor = parameter.detach().cpu()
+        tensor = parameter.detach().to(device="cpu", dtype=torch.bfloat16)
         yield from spec.native_to_hf(native_name, tensor)
 
 
