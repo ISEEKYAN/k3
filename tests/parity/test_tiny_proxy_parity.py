@@ -1,12 +1,28 @@
 from __future__ import annotations
 
-import copy
+from types import SimpleNamespace
 
 import torch
 import torch.nn.functional as F
 
 from mlite_k3.config import K3Config
+from mlite_k3.lite.checkpoint import (
+    K3WeightSpec,
+    audit_k3_weight_spec_sources,
+    iter_hf_weights,
+    load_weights_from_reader,
+)
+from mlite_k3.lite.protocol import ImplConfig, build_model, build_model_config
 from mlite_k3.model import K3Model
+
+
+class _Reader:
+    def __init__(self, tensors: dict[str, torch.Tensor]):
+        self._tensors = tensors
+        self.index = set(tensors)
+
+    def get_tensor(self, name: str) -> torch.Tensor:
+        return self._tensors[name]
 
 
 def _tiny_config() -> K3Config:
@@ -30,16 +46,93 @@ def _tiny_config() -> K3Config:
         kda_layers=(1,),
         attn_res_block_size=2,
         first_k_dense_replace=1,
-        moe_intermediate_size=6,
-        routed_expert_hidden_size=8,
+        moe_intermediate_size=32,
+        routed_expert_hidden_size=32,
         num_experts=4,
         num_experts_per_token=2,
         num_shared_experts=2,
     )
 
 
+def _tiny_hf_config() -> dict:
+    config = _tiny_config()
+    excluded = {
+        "source_model_type",
+        "full_attention_layers",
+        "kda_layers",
+        "kda_head_dim",
+        "kda_num_heads",
+        "kda_short_conv_kernel_size",
+        "kda_use_full_rank_gate",
+        "kda_gate_lower_bound",
+    }
+    text_config = {
+        key: value for key, value in config.__dict__.items() if key not in excluded
+    }
+    text_config.update(
+        {
+            "model_type": "kimi_linear",
+            "linear_attn_config": {
+                "full_attn_layers": list(config.full_attention_layers),
+                "kda_layers": list(config.kda_layers),
+                "head_dim": config.kda_head_dim,
+                "num_heads": config.kda_num_heads,
+                "short_conv_kernel_size": config.kda_short_conv_kernel_size,
+                "use_full_rank_gate": config.kda_use_full_rank_gate,
+                "gate_lower_bound": config.kda_gate_lower_bound,
+            },
+        }
+    )
+    return {"model_type": "kimi_k3", "text_config": text_config}
+
+
 def _linear(x: torch.Tensor, module) -> torch.Tensor:
     return F.linear(x, module.weight, module.bias)
+
+
+def _pack_mxfp4_reference(tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    block_size = 32
+    if tensor.shape[-1] % block_size:
+        raise ValueError("tiny MXFP4 source width must be divisible by 32")
+    source = tensor.float()
+    blocks = source.reshape(*source.shape[:-1], -1, block_size)
+    floor = 6.0 * (2.0**-126)
+    exponent = torch.ceil(
+        torch.log2(blocks.abs().amax(dim=-1).clamp_min(floor) / 6.0)
+    ).clamp(-127, 127)
+    scale = torch.exp2(exponent)
+    normalized = blocks / scale.unsqueeze(-1)
+    magnitude = normalized.abs()
+    codes = torch.zeros_like(magnitude, dtype=torch.uint8)
+    for boundary in (0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0):
+        codes += (magnitude > boundary).to(torch.uint8)
+    for upper_even_boundary in (0.75, 1.75, 3.5):
+        codes += (magnitude == upper_even_boundary).to(torch.uint8)
+    codes |= torch.where(
+        normalized.signbit(),
+        torch.tensor(8, device=normalized.device),
+        0,
+    ).to(torch.uint8)
+    codes = codes.reshape(*source.shape[:-1], source.shape[-1])
+    packed = codes[..., 0::2] | (codes[..., 1::2] << 4)
+    encoded_scale = (exponent + 127).to(torch.uint8)
+    return packed.contiguous(), encoded_scale.contiguous()
+
+
+def _quantized_release_reader(
+    hf_weights: dict[str, torch.Tensor],
+) -> tuple[_Reader, int]:
+    release = {}
+    quantized = 0
+    for name, tensor in hf_weights.items():
+        if ".experts." not in name:
+            release[name] = tensor
+            continue
+        packed, scale = _pack_mxfp4_reference(tensor)
+        release[f"{name}_packed"] = packed
+        release[f"{name}_scale"] = scale
+        quantized += 1
+    return _Reader(release), quantized
 
 
 def _rms_norm(x: torch.Tensor, module) -> torch.Tensor:
@@ -240,8 +333,27 @@ def _reference_model(model: K3Model, input_ids: torch.Tensor, labels: torch.Tens
 
 def test_tiny_hybrid_proxy_matches_independent_layerwise_reference():
     torch.manual_seed(20260727)
-    actual = K3Model(_tiny_config())
-    reference = copy.deepcopy(actual)
+    config = build_model_config(_tiny_hf_config())
+    assert config.layer_types == ["kda", "mla"]
+    reference = K3Model(config)
+    spec = K3WeightSpec(config)
+    hf_weights = {
+        name: tensor.clone() for name, tensor in iter_hf_weights(reference, spec)
+    }
+    reader, quantized = _quantized_release_reader(hf_weights)
+    assert quantized == config.num_experts * 3
+    assert audit_k3_weight_spec_sources(spec, reader.index) == len(hf_weights)
+    reference_loaded = load_weights_from_reader(reference, reader, spec)
+    torch.manual_seed(20260728)
+    bundle = build_model(
+        config,
+        impl_cfg=ImplConfig(device="cpu", dtype="float32"),
+    )
+    actual = bundle.chunks[0]
+    assert not torch.equal(actual.embed_tokens.weight, reference.embed_tokens.weight)
+    loaded = load_weights_from_reader(actual, reader, spec)
+    assert reference_loaded == len(dict(reference.named_parameters()))
+    assert loaded == len(dict(actual.named_parameters()))
     input_ids = torch.tensor([[1, 2, 3, 4], [4, 3, 2, 1]])
     labels = torch.tensor([[2, 3, 4, 5], [3, 2, 1, 0]])
 
@@ -252,7 +364,11 @@ def test_tiny_hybrid_proxy_matches_independent_layerwise_reference():
         )
         for layer in actual.layers
     ]
-    actual_output = actual(input_ids=input_ids, labels=labels)
+    assert bundle.forward_step is not None
+    actual_output = bundle.forward_step(
+        actual,
+        SimpleNamespace(input_ids=input_ids, labels=labels),
+    )
     for hook in hooks:
         hook.remove()
     reference_logits, reference_loss, reference_layers = _reference_model(
