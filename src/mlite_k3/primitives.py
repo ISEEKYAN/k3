@@ -155,7 +155,7 @@ class LatentMoE(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         original_shape = x.shape
         flat = x.reshape(-1, x.size(-1))
-        logits = self.router(flat.float())
+        logits = F.linear(flat.float(), self.router.weight.float())
         scores = torch.sigmoid(logits)
         selection = scores + self.expert_bias.to(scores.dtype)
         _, indices = torch.topk(selection, self.top_k, dim=-1, sorted=False)

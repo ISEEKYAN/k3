@@ -35,6 +35,7 @@ def kda_recurrent_reference(
     if a_log.shape != (heads,) or dt_bias.shape != (heads, head_dim):
         raise ValueError("KDA A_log/dt_bias shapes do not match heads and head_dim")
 
+    output_dtype = v.dtype
     q = F.normalize(q.float(), p=2, dim=-1)
     k = F.normalize(k.float(), p=2, dim=-1)
     v = v.float()
@@ -55,7 +56,7 @@ def kda_recurrent_reference(
         delta = (v[:, index] - prediction) * beta[:, index].unsqueeze(-1)
         state = state + torch.einsum("bhd,bhv->bhdv", k[:, index], delta)
         outputs.append(torch.einsum("bhd,bhdv->bhv", q[:, index], state) * scale)
-    return torch.stack(outputs, dim=1).to(v.dtype), state
+    return torch.stack(outputs, dim=1).to(output_dtype), state
 
 
 def _fla_chunk_kda(
@@ -156,6 +157,14 @@ class KDA(nn.Module):
         self.g_proj = nn.Linear(hidden_size, projection_size, bias=False)
         self.o_norm = RMSNorm(head_dim, norm_eps)
         self.o_proj = nn.Linear(projection_size, hidden_size, bias=False)
+
+    def _apply(self, fn, recurse: bool = True):
+        module = super()._apply(fn, recurse=recurse)
+        for parameter in (self.A_log, self.dt_bias):
+            parameter.data = parameter.data.float()
+            if parameter.grad is not None:
+                parameter.grad.data = parameter.grad.data.float()
+        return module
 
     def _heads(self, x: torch.Tensor) -> torch.Tensor:
         return x.view(*x.shape[:-1], self.heads, self.head_dim)
