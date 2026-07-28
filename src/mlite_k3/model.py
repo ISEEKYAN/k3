@@ -128,6 +128,10 @@ class K3Model(nn.Module):
             pixel_values=pixel_values,
             images=images,
         )
+        if input_ids.dim() == 1:
+            input_ids = input_ids.unsqueeze(0)
+        if labels is not None and labels.dim() == 1:
+            labels = labels.unsqueeze(0)
         hidden_states = self.embed_tokens(input_ids)
         batch, sequence, hidden = hidden_states.shape
         block_residual = hidden_states.new_zeros(batch * sequence, 0, hidden)

@@ -170,6 +170,19 @@ def test_hybrid_model_uses_kda_mla_and_latent_moe_in_real_forward_backward():
         raise AssertionError("vision inputs must not be silently accepted")
 
 
+def test_model_normalizes_single_sequence_packed_inputs_to_a_batch_row():
+    from mlite_k3.model import K3Model
+
+    model = K3Model(tiny_config())
+    output = model(
+        input_ids=torch.tensor([1, 2, 3, 4]),
+        labels=torch.tensor([2, 3, 4, 5]),
+    )
+
+    assert output["logits"].shape == (1, 4, 32)
+    assert output["loss"].ndim == 0
+
+
 def test_kda_short_convolutions_match_bias_free_checkpoint_contract():
     from mlite_k3.kda import KDA
     from mlite_k3.model import K3Model
