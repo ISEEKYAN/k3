@@ -8,7 +8,6 @@ import torch
 import torch.nn as nn
 import transformer_engine.pytorch as te
 
-from megatron.lite.primitive.modules.attention.mla import MultiLatentAttention
 from megatron.lite.primitive.modules.dispatcher import TokenDispatcher
 from megatron.lite.primitive.modules.experts import Experts
 from megatron.lite.primitive.modules.router import SigmoidTopKRouter
@@ -33,6 +32,7 @@ from mlite_k3.lite.thd_contract import validate_thd_inputs
 from mlite_k3.model import _apply_attention_residual
 from mlite_k3.primitive.kda import kda
 from mlite_k3.primitive.kda_parallel import K3FullRankGatedDeltaNet
+from mlite_k3.primitive.mla import K3MultiLatentAttention
 
 
 def _situ_with_probs(
@@ -196,7 +196,7 @@ class K3ParallelDecoderLayer(nn.Module):
                 cp_mode=kda_cp_mode,
             )
         else:
-            self.self_attention = MultiLatentAttention(
+            self.self_attention = K3MultiLatentAttention(
                 hidden_size=config.hidden_size,
                 num_attention_heads=config.num_attention_heads,
                 q_lora_rank=config.q_lora_rank,

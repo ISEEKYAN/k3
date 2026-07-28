@@ -57,6 +57,11 @@ def test_k3_parallel_kda_imports_against_latest_mlite():
     assert "FullRankGatedDeltaNet," not in source
     assert "class _K3FullRankDeltaNet(nn.Module):" in source
     assert "GatedDeltaNet._headwise_cp2hp" in source
+    model_source = (
+        Path(__file__).parents[2] / "src/mlite_k3/lite/model.py"
+    ).read_text()
+    assert "from mlite_k3.primitive.mla import K3MultiLatentAttention" in model_source
+    assert "self.self_attention = K3MultiLatentAttention(" in model_source
 
 
 def test_latest_mlite_constructs_the_distributed_k3_model():
