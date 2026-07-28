@@ -9,7 +9,6 @@ import torch.nn as nn
 import transformer_engine.pytorch as te
 
 from megatron.lite.primitive.modules.dispatcher import TokenDispatcher
-from megatron.lite.primitive.modules.experts import Experts
 from megatron.lite.primitive.modules.router import SigmoidTopKRouter
 from megatron.lite.primitive.ops.cross_entropy import vocab_parallel_cross_entropy
 from megatron.lite.primitive.parallel import (
@@ -30,6 +29,7 @@ from mlite_k3.lite.pipeline_state import (
 )
 from mlite_k3.lite.thd_contract import validate_thd_inputs
 from mlite_k3.model import _apply_attention_residual
+from mlite_k3.primitive.experts import K3LatentExperts
 from mlite_k3.primitive.kda import kda
 from mlite_k3.primitive.kda_parallel import K3FullRankGatedDeltaNet
 from mlite_k3.primitive.mla import K3MultiLatentAttention
@@ -119,7 +119,7 @@ class ParallelLatentMoE(nn.Module):
                 linear_beta=config.activation_situ_linear_beta,
             )
 
-        self.experts = Experts(
+        self.experts = K3LatentExperts(
             config,
             ps,
             hidden_size=config.routed_expert_hidden_size,

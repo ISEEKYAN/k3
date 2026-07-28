@@ -62,6 +62,8 @@ def test_k3_parallel_kda_imports_against_latest_mlite():
     ).read_text()
     assert "from mlite_k3.primitive.mla import K3MultiLatentAttention" in model_source
     assert "self.self_attention = K3MultiLatentAttention(" in model_source
+    assert "from mlite_k3.primitive.experts import K3LatentExperts" in model_source
+    assert "self.experts = K3LatentExperts(" in model_source
 
 
 def test_latest_mlite_constructs_the_distributed_k3_model():
