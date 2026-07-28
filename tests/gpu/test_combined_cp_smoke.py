@@ -166,6 +166,8 @@ def _capture_attention_and_router(model: K3ParallelModel):
         tokens = router_input.shape[0]
         if module.router_dtype is not torch.float32:
             raise AssertionError("K3 shared router must declare FP32 gating")
+        if "expert_bias" not in module.state_dict():
+            raise AssertionError("K3 shared router bias must be persistent")
         router_inputs.append(router_input.view(tokens, 1, -1))
         router_logits.append(
             F.linear(
@@ -191,9 +193,18 @@ def _router_modules(model: K3ParallelModel):
     return [layer.moe.router for layer in model.layers if layer.moe is not None]
 
 
-def _selected_indices_by_expert(scores: torch.Tensor, topk: int) -> torch.Tensor:
-    """Match the shared router contract: select by score, order by expert id."""
-    selected = torch.topk(scores, topk, dim=-1, sorted=False).indices
+def _selected_indices_by_expert(
+    scores: torch.Tensor,
+    expert_bias: torch.Tensor,
+    topk: int,
+) -> torch.Tensor:
+    """Select with correction bias, then match dispatcher expert-id order."""
+    selected = torch.topk(
+        scores + expert_bias.to(scores.dtype),
+        topk,
+        dim=-1,
+        sorted=False,
+    ).indices
     return selected.sort(dim=-1).values
 
 
@@ -319,6 +330,15 @@ def main() -> None:
         .to(device=device, dtype=torch.bfloat16)
         .train()
     )
+    for router in _router_modules(model):
+        router.expert_bias.copy_(
+            torch.linspace(
+                -0.2,
+                0.2,
+                config.num_experts,
+                device=device,
+            )
+        )
     if phase == "combined":
         canonical = torch.load(
             artifact_dir / "canonical.pt",
@@ -522,16 +542,25 @@ def main() -> None:
             parallel_scores = torch.sigmoid(logits.float())
             baseline_fp32_scores = torch.sigmoid(expected_fp32_logits)
             parallel_fp32_scores = torch.sigmoid(fp32_logits)
+            expert_bias = router.expert_bias.view(1, 1, -1)
             topk = indices.shape[-1]
             if not torch.equal(
-                _selected_indices_by_expert(baseline_scores, topk),
+                _selected_indices_by_expert(
+                    baseline_scores,
+                    expert_bias,
+                    topk,
+                ),
                 expected_indices,
             ):
                 raise AssertionError(
                     "captured A router indices do not match its logits"
                 )
             if not torch.equal(
-                _selected_indices_by_expert(parallel_scores, topk),
+                _selected_indices_by_expert(
+                    parallel_scores,
+                    expert_bias,
+                    topk,
+                ),
                 indices,
             ):
                 raise AssertionError(
@@ -540,10 +569,12 @@ def main() -> None:
 
             fp32_expected_indices = _selected_indices_by_expert(
                 baseline_fp32_scores,
+                expert_bias,
                 topk,
             )
             fp32_indices = _selected_indices_by_expert(
                 parallel_fp32_scores,
+                expert_bias,
                 topk,
             )
             mismatches = indices != expected_indices
@@ -564,11 +595,11 @@ def main() -> None:
                 .flatten()
             )
             baseline_top12, baseline_boundary = _router_margin(
-                baseline_scores,
+                baseline_scores + expert_bias,
                 topk,
             )
             parallel_top12, parallel_boundary = _router_margin(
-                parallel_scores,
+                parallel_scores + expert_bias,
                 topk,
             )
             flip_records = []

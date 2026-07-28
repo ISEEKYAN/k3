@@ -98,6 +98,7 @@ class ParallelLatentMoE(nn.Module):
             ps,
             compute_aux_loss=False,
             router_dtype=torch.float32,
+            expert_bias_persistent=True,
         )
         self.dispatcher = TokenDispatcher(
             config.num_experts,

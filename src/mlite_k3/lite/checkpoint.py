@@ -161,6 +161,9 @@ class K3WeightSpec:
             mapping[f"{native}.moe.{native_suffix}"] = [
                 f"{prefix}.{suffix}" for suffix in hf_suffixes
             ]
+        mapping[f"{native}.moe.router.expert_bias"] = mapping[
+            f"{native}.moe.expert_bias"
+        ]
         for expert in range(self.config.num_experts):
             expert_prefix = f"{prefix}.experts.{expert}"
             mapping[f"{native}.moe.experts.{expert}.gate_up.weight"] = [
