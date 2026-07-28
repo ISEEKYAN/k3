@@ -129,6 +129,9 @@ def test_kda_fla_backend_uses_trainable_chunk_contract(monkeypatch):
     assert final_state is None
     assert calls[0]["use_qk_l2norm_in_kernel"] is True
     assert calls[0]["use_gate_in_kernel"] is True
-    assert calls[0]["use_beta_sigmoid_in_kernel"] is True
+    torch.testing.assert_close(calls[0]["beta"], torch.sigmoid(beta))
+    assert calls[0]["dt_bias"].shape == (dt_bias.numel(),)
+    torch.testing.assert_close(calls[0]["dt_bias"], dt_bias.flatten())
+    assert "use_beta_sigmoid_in_kernel" not in calls[0]
     assert calls[0]["safe_gate"] is True
     assert calls[0]["state_v_first"] is True

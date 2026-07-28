@@ -197,6 +197,20 @@ def test_kda_short_convolutions_match_bias_free_checkpoint_contract():
         assert f"layers.0.self_attention.{name}.conv.bias" not in model.state_dict()
 
 
+def test_latent_moe_keeps_router_math_in_fp32_for_bfloat16_model():
+    from mlite_k3.primitives import LatentMoE
+
+    module = LatentMoE(tiny_config()).to(dtype=torch.bfloat16)
+    hidden_states = torch.randn(2, 4, 16, dtype=torch.bfloat16)
+
+    output = module(hidden_states)
+    output.float().square().mean().backward()
+
+    assert output.dtype == torch.bfloat16
+    assert module.router.weight.grad is not None
+    assert torch.isfinite(module.router.weight.grad).all()
+
+
 def test_protocol_is_importable_and_builds_tiny_config_from_public_shape():
     from mlite_k3.lite import protocol
 
