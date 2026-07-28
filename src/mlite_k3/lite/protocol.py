@@ -21,6 +21,7 @@ class ImplConfig:
     use_thd: bool = False
     use_deepep: bool = False
     deterministic: bool = False
+    kda_cp_mode: str = "headwise"
 
 
 def build_model_config(source: str | Path | dict, **overrides) -> K3Config:
@@ -44,7 +45,6 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
     }
     if impl_cfg.optimizer is not None:
         raise NotImplementedError("K3 optimizer integration is not validated yet")
-
     from megatron.lite.primitive.bundle import ModelBundle
     from megatron.lite.primitive.parallel import ParallelState, init_parallel
 
@@ -68,6 +68,7 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
             use_thd=impl_cfg.use_thd,
             use_deepep=impl_cfg.use_deepep,
             deterministic=impl_cfg.deterministic,
+            kda_cp_mode=impl_cfg.kda_cp_mode,
         ).to(device=impl_cfg.device, dtype=dtype)
         validated_scope = "distributed"
     else:

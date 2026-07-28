@@ -19,6 +19,7 @@ from mlite_k3.lite.model import K3ParallelModel
 REL_FLOOR = 1.0e-3
 ABS_TOLERANCE = 3.0e-2
 WEIGHT_GRAD_TOLERANCE = 6.0e-2
+KDA_CP_MODE = "headwise"
 
 _elastic_error_file = os.environ.get("TORCHELASTIC_ERROR_FILE")
 if _elastic_error_file and "{}" in _elastic_error_file:
@@ -187,7 +188,12 @@ def main() -> None:
 
     torch.manual_seed(20260727)
     reference = (
-        K3ParallelModel(config, ParallelState(), deterministic=False)
+        K3ParallelModel(
+            config,
+            ParallelState(),
+            deterministic=False,
+            kda_cp_mode=KDA_CP_MODE,
+        )
         .to(device=device, dtype=torch.bfloat16)
         .train()
     )
@@ -200,7 +206,12 @@ def main() -> None:
     ps = init_parallel(ParallelConfig(tp=1, ep=1, etp=1, pp=1, cp=2))
     torch.manual_seed(20260727)
     parallel = (
-        K3ParallelModel(config, ps, deterministic=False)
+        K3ParallelModel(
+            config,
+            ps,
+            deterministic=False,
+            kda_cp_mode=KDA_CP_MODE,
+        )
         .to(device=device, dtype=torch.bfloat16)
         .train()
     )
@@ -208,8 +219,13 @@ def main() -> None:
     assert parallel.layers[0].self_attention.A_log.dtype == torch.float32
     assert parallel.layers[0].self_attention.dt_bias.dtype == torch.float32
     parallel_layers, parallel_handles = _capture_layers(parallel)
+    torch.cuda.synchronize(device)
+    memory_before_parallel = torch.cuda.memory_allocated(device)
+    torch.cuda.reset_peak_memory_stats(device)
     parallel_result = parallel(input_ids=input_ids, labels=labels)
     (parallel_result["loss"] / ps.cp_size).backward()
+    torch.cuda.synchronize(device)
+    memory_peak_parallel = torch.cuda.max_memory_allocated(device)
     for handle in parallel_handles:
         handle.remove()
 
@@ -305,7 +321,14 @@ def main() -> None:
         "rank": rank,
         "world_size": world_size,
         "parallel": {"tp": 1, "ep": 1, "etp": 1, "pp": 1, "cp": 2},
-        "kda_cp_mode": "replicated_full_sequence",
+        "kda_cp_mode": KDA_CP_MODE,
+        "memory": {
+            "allocated_before_parallel_bytes": memory_before_parallel,
+            "peak_allocated_bytes": memory_peak_parallel,
+            "parallel_peak_delta_bytes": (
+                memory_peak_parallel - memory_before_parallel
+            ),
+        },
         "layers": layer_metrics,
         "log_probs": log_probs_metrics,
         "weight_grad_worst": max(
