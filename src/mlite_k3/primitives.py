@@ -119,9 +119,11 @@ class LatentMoE(nn.Module):
         self.top_k = config.num_experts_per_token
         self.scaling_factor = config.routed_scaling_factor
         self.router = nn.Linear(config.hidden_size, config.num_experts, bias=False)
-        self.expert_bias = nn.Parameter(
-            torch.zeros(config.num_experts, dtype=torch.float32),
-            requires_grad=False,
+        # The public checkpoint treats e_score_correction_bias as router state,
+        # not an optimizer parameter.  Keep it persistent so state_dict and
+        # checkpoint streaming retain the exact routing placement.
+        self.register_buffer(
+            "expert_bias", torch.zeros(config.num_experts, dtype=torch.float32)
         )
         self.routed_expert_down_proj = nn.Linear(
             config.hidden_size,

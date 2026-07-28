@@ -360,21 +360,30 @@ def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
     return base
 
 
+def _named_checkpoint_tensors(model: torch.nn.Module):
+    """Yield every persistent model tensor represented by the public spec."""
+    persistent = set(model.state_dict())
+    yield from model.named_parameters()
+    yield from (
+        (name, buffer) for name, buffer in model.named_buffers() if name in persistent
+    )
+
+
 def load_weights_from_reader(
     model: torch.nn.Module,
     reader: Any,
     spec: K3WeightSpec,
 ) -> int:
-    """Stream all native parameters from an already indexed reader."""
+    """Stream all native parameters and persistent buffers from a reader."""
     base = _unwrap_model(model)
     mapping = spec.weight_map()
     loaded = 0
     with torch.no_grad():
-        for native_name, parameter in base.named_parameters():
+        for native_name, parameter in _named_checkpoint_tensors(base):
             hf_names = mapping.get(native_name)
             if hf_names is None:
                 raise KeyError(
-                    f"native parameter {native_name!r} has no K3 checkpoint mapping"
+                    f"native tensor {native_name!r} has no K3 checkpoint mapping"
                 )
             hf_tensors = [get_hf_weight(reader, name) for name in hf_names]
             tensor = spec.hf_to_native(native_name, hf_tensors)
@@ -393,13 +402,13 @@ def iter_hf_weights(
     model: torch.nn.Module,
     spec: K3WeightSpec,
 ):
-    """Yield plain BF16 HF tensors one native parameter at a time."""
+    """Yield plain BF16 HF tensors one native tensor at a time."""
     base = _unwrap_model(model)
     mapping = spec.weight_map()
-    for native_name, parameter in base.named_parameters():
+    for native_name, parameter in _named_checkpoint_tensors(base):
         if native_name not in mapping:
             raise KeyError(
-                f"native parameter {native_name!r} has no K3 checkpoint mapping"
+                f"native tensor {native_name!r} has no K3 checkpoint mapping"
             )
         tensor = parameter.detach().to(device="cpu", dtype=torch.bfloat16)
         yield from spec.native_to_hf(native_name, tensor)

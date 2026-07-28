@@ -51,7 +51,8 @@ def _deterministic_hf_reader(
 ) -> _Reader:
     tensors: dict[str, torch.Tensor] = {}
     mapping = spec.weight_map()
-    for offset, (native_name, parameter) in enumerate(model.named_parameters()):
+    named_tensors = list(model.named_parameters()) + list(model.named_buffers())
+    for offset, (native_name, parameter) in enumerate(named_tensors):
         source_names = mapping[native_name]
         values = torch.linspace(
             -0.02 + offset * 1e-5,
@@ -80,7 +81,7 @@ def test_complete_tiny_weight_spec_load_runs_hybrid_forward_backward():
 
     loaded = load_weights_from_reader(model, reader, spec)
 
-    assert loaded == sum(1 for _ in model.parameters())
+    assert loaded == len(model.state_dict())
     assert reader.index == {
         name for names in spec.weight_map().values() for name in names
     }
