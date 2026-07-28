@@ -8,10 +8,15 @@ import torch.nn.functional as F
 
 from mlite_k3.primitive.kda import (
     kda as run_kda,
-    torch_recurrent_kda as kda_recurrent_reference,
+    torch_recurrent_kda,
 )
 
 from mlite_k3.norm import RMSNorm
+
+
+def kda_recurrent_reference(*args, scale: float = 1.0, **kwargs):
+    """Compatibility wrapper preserving the model-level reference scale."""
+    return torch_recurrent_kda(*args, scale=scale, **kwargs)
 
 
 class _CausalDepthwiseConv1d(nn.Module):
@@ -67,6 +72,14 @@ class KDA(nn.Module):
         self.g_proj = nn.Linear(hidden_size, projection_size, bias=False)
         self.o_norm = RMSNorm(head_dim, norm_eps)
         self.o_proj = nn.Linear(projection_size, hidden_size, bias=False)
+
+    def _apply(self, fn, recurse: bool = True):
+        module = super()._apply(fn, recurse=recurse)
+        for parameter in (self.A_log, self.dt_bias):
+            parameter.data = parameter.data.float()
+            if parameter.grad is not None:
+                parameter.grad.data = parameter.grad.data.float()
+        return module
 
     def _heads(self, x: torch.Tensor) -> torch.Tensor:
         return x.view(*x.shape[:-1], self.heads, self.head_dim)
