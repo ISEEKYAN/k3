@@ -79,14 +79,15 @@ def test_kda_cuda_contract_calls_fla_chunk_kernel(monkeypatch):
     monkeypatch.setitem(sys.modules, "fla.ops", ModuleType("fla.ops"))
     monkeypatch.setitem(sys.modules, "fla.ops.kda", kda_module)
     q = torch.zeros(1, 2, 1, 2)
+    beta_logits = torch.tensor([[[-2.0], [2.0]]])
     result = _fla_chunk_kda(
         q,
         q,
         q,
         q,
-        torch.zeros(1, 2, 1),
+        beta_logits,
         a_log=torch.zeros(1),
-        dt_bias=torch.zeros(1, 2),
+        dt_bias=torch.zeros(2),
         lower_bound=-5.0,
         scale=2**-0.5,
     )
@@ -94,11 +95,14 @@ def test_kda_cuda_contract_calls_fla_chunk_kernel(monkeypatch):
     assert torch.equal(result, torch.ones_like(q))
     assert calls[0]["use_qk_l2norm_in_kernel"] is True
     assert calls[0]["use_gate_in_kernel"] is True
-    assert calls[0]["use_beta_sigmoid_in_kernel"] is True
+    torch.testing.assert_close(calls[0]["beta"], torch.sigmoid(beta_logits))
+    assert "use_beta_sigmoid_in_kernel" not in calls[0]
     assert calls[0]["safe_gate"] is True
     assert calls[0]["lower_bound"] == -5.0
     assert calls[0]["scale"] == 2**-0.5
-    assert calls[0]["state_v_first"] is True
+    assert calls[0]["transpose_state_layout"] is True
+    assert "state_v_first" not in calls[0]
+    assert calls[0]["dt_bias"].shape == (2,)
 
 
 def test_kda_cuda_contract_does_not_call_flash_kda_directly(monkeypatch):
@@ -124,7 +128,7 @@ def test_kda_cuda_contract_does_not_call_flash_kda_directly(monkeypatch):
             q,
             torch.zeros(1, 2, 1),
             a_log=torch.zeros(1),
-            dt_bias=torch.zeros(1, 2),
+            dt_bias=torch.zeros(2),
             lower_bound=-5.0,
             scale=2**-0.5,
         )
@@ -164,6 +168,19 @@ def test_hybrid_model_uses_kda_mla_and_latent_moe_in_real_forward_backward():
         assert "text inputs only" in str(error)
     else:
         raise AssertionError("vision inputs must not be silently accepted")
+
+
+def test_model_normalizes_single_sequence_packed_inputs_to_a_batch_row():
+    from mlite_k3.model import K3Model
+
+    model = K3Model(tiny_config())
+    output = model(
+        input_ids=torch.tensor([1, 2, 3, 4]),
+        labels=torch.tensor([2, 3, 4, 5]),
+    )
+
+    assert output["logits"].shape == (1, 4, 32)
+    assert output["loss"].ndim == 0
 
 
 def test_kda_short_convolutions_match_bias_free_checkpoint_contract():

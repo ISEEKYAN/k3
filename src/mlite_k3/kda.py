@@ -35,6 +35,7 @@ def kda_recurrent_reference(
     if a_log.shape != (heads,) or dt_bias.shape != (heads, head_dim):
         raise ValueError("KDA A_log/dt_bias shapes do not match heads and head_dim")
 
+    output_dtype = v.dtype
     q = F.normalize(q.float(), p=2, dim=-1)
     k = F.normalize(k.float(), p=2, dim=-1)
     v = v.float()
@@ -55,7 +56,7 @@ def kda_recurrent_reference(
         delta = (v[:, index] - prediction) * beta[:, index].unsqueeze(-1)
         state = state + torch.einsum("bhd,bhv->bhdv", k[:, index], delta)
         outputs.append(torch.einsum("bhd,bhdv->bhv", q[:, index], state) * scale)
-    return torch.stack(outputs, dim=1).to(v.dtype), state
+    return torch.stack(outputs, dim=1).to(output_dtype), state
 
 
 def _fla_chunk_kda(
@@ -87,7 +88,7 @@ def _fla_chunk_kda(
         k=k,
         v=v,
         g=gate_logits,
-        beta=beta_logits,
+        beta=torch.sigmoid(beta_logits),
         scale=scale,
         A_log=a_log,
         dt_bias=dt_bias,
@@ -95,10 +96,9 @@ def _fla_chunk_kda(
         output_final_state=False,
         use_qk_l2norm_in_kernel=True,
         use_gate_in_kernel=True,
-        use_beta_sigmoid_in_kernel=True,
         safe_gate=True,
         lower_bound=lower_bound,
-        state_v_first=True,
+        transpose_state_layout=True,
     )
     return output
 
@@ -157,6 +157,14 @@ class KDA(nn.Module):
         self.o_norm = RMSNorm(head_dim, norm_eps)
         self.o_proj = nn.Linear(projection_size, hidden_size, bias=False)
 
+    def _apply(self, fn, recurse: bool = True):
+        module = super()._apply(fn, recurse=recurse)
+        for parameter in (self.A_log, self.dt_bias):
+            parameter.data = parameter.data.float()
+            if parameter.grad is not None:
+                parameter.grad.data = parameter.grad.data.float()
+        return module
+
     def _heads(self, x: torch.Tensor) -> torch.Tensor:
         return x.view(*x.shape[:-1], self.heads, self.head_dim)
 
@@ -168,15 +176,28 @@ class KDA(nn.Module):
         beta = self.b_proj(x)
         kda_kwargs = {
             "a_log": self.A_log,
-            "dt_bias": self.dt_bias.view(self.heads, self.head_dim),
             "lower_bound": self.lower_bound,
             "scale": self.head_dim**-0.5,
         }
         if x.is_cuda:
-            output = _fla_chunk_kda(q, k, v, feature_gate, beta, **kda_kwargs)
+            output = _fla_chunk_kda(
+                q,
+                k,
+                v,
+                feature_gate,
+                beta,
+                dt_bias=self.dt_bias,
+                **kda_kwargs,
+            )
         else:
             output, _ = kda_recurrent_reference(
-                q, k, v, feature_gate, beta, **kda_kwargs
+                q,
+                k,
+                v,
+                feature_gate,
+                beta,
+                dt_bias=self.dt_bias.view(self.heads, self.head_dim),
+                **kda_kwargs,
             )
         output_gate = torch.sigmoid(self._heads(self.g_proj(x)))
         output = self.o_norm(output) * output_gate
