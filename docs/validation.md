@@ -176,10 +176,11 @@ described as a full-scale Kimi K3 run.
 
 For the first release, every Stage 4 item is deferred and not-done: one-rank
 GPU parity, short training, EP, CP, packed THD, combined CP+EP, and PP. The
-unlock path starts with the shared KDA primitive in
-[`ISEEKYAN/Megatron-LM#136`](https://github.com/ISEEKYAN/Megatron-LM/pull/136),
-followed by scheduler-backed forward/backward topology tests. FlashKDA direct
-dispatch is also not-done; the approved training path is FLA `chunk_kda`.
+unlock path is to extend the K3-owned primitive layer with tensor/expert/context
+sharding, packed-sequence state transfer, checkpoint placement, and pipeline
+ownership, followed by scheduler-backed forward/backward topology tests.
+FlashKDA direct dispatch is also not-done; the approved training path is FLA
+`chunk_kda`.
 
 ## Evidence and publication rules
 
