@@ -98,6 +98,11 @@ class K3Config:
         """Shared sigmoid-router compatibility alias."""
         return self.num_experts
 
+    @property
+    def scoring_func(self) -> str:
+        """Shared MLite router spelling."""
+        return self.moe_router_activation_func
+
     @staticmethod
     def ensure_text_only_inputs(
         *,

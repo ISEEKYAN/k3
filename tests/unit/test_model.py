@@ -197,6 +197,40 @@ def test_kda_short_convolutions_match_bias_free_checkpoint_contract():
         assert f"layers.0.self_attention.{name}.conv.bias" not in model.state_dict()
 
 
+def test_reference_model_rejects_bare_thd_input_with_packing_contract():
+    from mlite_k3.model import K3Model
+
+    model = K3Model(tiny_config())
+
+    try:
+        model(input_ids=torch.tensor([1, 2, 3, 4]))
+    except ValueError as error:
+        assert "1-D packed input_ids require packed_seq_params" in str(error)
+    else:
+        raise AssertionError("bare THD input must not cross packed sequence boundaries")
+
+
+def test_attention_residual_accepts_explicit_epsilon_for_te_norm_contract():
+    from mlite_k3.model import _apply_attention_residual
+
+    norm = torch.nn.Module()
+    norm.weight = torch.nn.Parameter(torch.ones(4))
+    projection = torch.nn.Linear(4, 1, bias=False)
+    prefix_sum = torch.randn(2, 4)
+    block_residual = torch.randn(2, 1, 4)
+
+    output = _apply_attention_residual(
+        prefix_sum,
+        block_residual,
+        projection,
+        norm,
+        variance_epsilon=1e-6,
+    )
+
+    assert output.shape == prefix_sum.shape
+    assert torch.isfinite(output).all()
+
+
 def test_latent_moe_keeps_router_math_in_fp32_for_bfloat16_model():
     from mlite_k3.primitives import LatentMoE
 

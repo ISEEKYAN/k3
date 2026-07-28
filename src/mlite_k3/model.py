@@ -20,12 +20,16 @@ def _apply_attention_residual(
     prefix_sum: torch.Tensor,
     block_residual: torch.Tensor,
     projection: nn.Linear,
-    norm: RMSNorm,
+    norm: nn.Module,
+    *,
+    variance_epsilon: float | None = None,
 ) -> torch.Tensor:
     values = torch.cat((block_residual, prefix_sum.unsqueeze(1)), dim=1)
     values_float = values.float()
     variance = values_float.square().mean(dim=-1, keepdim=True)
-    keys = values_float * torch.rsqrt(variance + norm.variance_epsilon)
+    if variance_epsilon is None:
+        variance_epsilon = norm.variance_epsilon
+    keys = values_float * torch.rsqrt(variance + variance_epsilon)
     score_weight = norm.weight.float() * projection.weight.squeeze(0).float()
     probabilities = (keys * score_weight).sum(dim=-1).softmax(dim=-1).unsqueeze(1)
     return torch.matmul(probabilities, values_float).squeeze(1).to(values.dtype)
