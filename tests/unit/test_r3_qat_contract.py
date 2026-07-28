@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from mlite_k3.config import K3Config
 from mlite_k3.lite import protocol
 from mlite_k3.lite.protocol import ImplConfig, build_model
@@ -55,6 +57,24 @@ def test_k3_parallel_kda_imports_against_latest_mlite():
     assert "FullRankGatedDeltaNet," not in source
     assert "class _K3FullRankDeltaNet(nn.Module):" in source
     assert "GatedDeltaNet._headwise_cp2hp" in source
+
+
+def test_latest_mlite_constructs_the_distributed_k3_model():
+    pytest.importorskip("transformer_engine")
+    from megatron.lite.primitive.parallel import ParallelState
+
+    from mlite_k3.lite.model import K3ParallelModel
+
+    model = K3ParallelModel(
+        _tiny_config(),
+        ParallelState(),
+        deterministic=True,
+    )
+
+    assert len(model.layers) == 2
+    assert model.layers[0].self_attention.__class__.__name__ == (
+        "K3FullRankGatedDeltaNet"
+    )
 
 
 def test_mxfp4_qat_only_parametrizes_routed_expert_linears():
