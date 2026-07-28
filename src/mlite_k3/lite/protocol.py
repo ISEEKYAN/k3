@@ -49,7 +49,7 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
     blocked = {
         name: size
         for name, size in dimensions.items()
-        if name != "tp" and size != 1
+        if name in {"pp", "cp"} and size != 1
     }
     if blocked:
         raise NotImplementedError(
@@ -78,7 +78,7 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
             use_deepep=impl_cfg.use_deepep,
             deterministic=impl_cfg.deterministic,
         ).to(device=impl_cfg.device, dtype=dtype)
-        validated_scope = "tensor_parallel"
+        validated_scope = "distributed"
     else:
         ps = ParallelState()
         model = K3Model(model_cfg).to(device=impl_cfg.device, dtype=dtype)
@@ -93,6 +93,9 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
         extras={
             "model_cfg": model_cfg,
             "validated_scope": validated_scope,
+            "validated_axes": tuple(
+                name for name, size in dimensions.items() if size > 1
+            ),
         },
     )
 
