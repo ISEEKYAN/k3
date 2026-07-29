@@ -176,10 +176,12 @@ described as a full-scale Kimi K3 run.
 
 Reduced scheduler-backed proxies now cover one-rank parity, EP, CP, packed THD,
 combined CP+EP, and PP. The packed-THD CP proxy enters through the public
-`PackedBatch` protocol and asserts that packing-aware CP partitioning happens
-exactly once before completing forward and backward. Full-scale checkpoint
-training and a short optimizer-backed train remain deferred. FlashKDA direct
-dispatch is also not done; the approved training path is FLA `chunk_kda`.
+`PackedBatch` protocol and asserts for CP1/2/4 that packing-aware partitioning
+happens exactly once, every rank receives the expected token order, and the CP
+group conserves every input token before completing forward and backward.
+Full-scale checkpoint training and a short optimizer-backed train remain
+deferred. FlashKDA direct dispatch is also not done; the approved training path
+is FLA `chunk_kda`.
 
 ## Evidence and publication rules
 

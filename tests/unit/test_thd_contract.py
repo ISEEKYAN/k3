@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from megatron.lite.primitive.parallel import split_packed_to_cp_local
 from mlite_k3.lite.thd_contract import (
     thd_requires_context_parallel_slice,
     validate_thd_inputs,
@@ -64,3 +65,57 @@ def test_thd_rejects_local_context_parallel_metadata_for_another_topology():
 
     with pytest.raises(ValueError, match="local_cp_size=4.*cp_size=2"):
         thd_requires_context_parallel_slice(packed, cp_size=2)
+
+
+def _expected_zigzag_tokens(
+    full_tokens: torch.Tensor,
+    lengths: list[int],
+    *,
+    cp_rank: int,
+    cp_size: int,
+) -> torch.Tensor:
+    pieces = []
+    offset = 0
+    for length in lengths:
+        row = full_tokens[offset : offset + length]
+        offset += length
+        chunks = row.view(2 * cp_size, length // (2 * cp_size))
+        pieces.extend((chunks[cp_rank], chunks[2 * cp_size - cp_rank - 1]))
+    return torch.cat(pieces)
+
+
+@pytest.mark.parametrize("cp_size", [1, 2, 4])
+def test_packed_thd_cp_shards_preserve_each_token_in_exact_order(cp_size):
+    lengths = [8, 16]
+    full_tokens = torch.arange(sum(lengths))
+    cu_seqlens = torch.cat(
+        (torch.zeros(1, dtype=torch.int32), torch.tensor(lengths).cumsum(0))
+    )
+    shards = []
+
+    for cp_rank in range(cp_size):
+        shard = split_packed_to_cp_local(
+            full_tokens,
+            cu_seqlens_padded=cu_seqlens,
+            cp_size=cp_size,
+            cp_rank=cp_rank,
+            dim=0,
+        )
+        expected = (
+            full_tokens
+            if cp_size == 1
+            else _expected_zigzag_tokens(
+                full_tokens,
+                lengths,
+                cp_rank=cp_rank,
+                cp_size=cp_size,
+            )
+        )
+        assert torch.equal(shard, expected)
+        assert shard.numel() == full_tokens.numel() // cp_size
+        shards.append(shard)
+
+    assert torch.equal(
+        torch.sort(torch.cat(shards)).values,
+        full_tokens,
+    )

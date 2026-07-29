@@ -1,4 +1,4 @@
-"""Eight-rank K3 packed-THD + TP2/EP2/CP2 forward/backward smoke."""
+"""Eight-rank K3 packed-THD + CP forward/backward and token-parity smoke."""
 
 from __future__ import annotations
 
@@ -12,6 +12,35 @@ from megatron.lite.runtime.contracts import ParallelConfig
 from megatron.lite.runtime.contracts.data import PackedBatch
 from mlite_k3.config import K3Config
 from mlite_k3.lite.protocol import ImplConfig, build_model
+
+
+def _expected_local_tokens(
+    full_tokens: torch.Tensor,
+    lengths: list[int],
+    *,
+    cp_rank: int,
+    cp_size: int,
+) -> torch.Tensor:
+    """Independently calculate the per-sequence zigzag shard for one CP rank."""
+    pieces = []
+    offset = 0
+    for length in lengths:
+        if length % (2 * cp_size):
+            raise ValueError(
+                f"sequence length {length} must be divisible by 2 * cp_size={2 * cp_size}"
+            )
+        row = full_tokens[offset : offset + length]
+        offset += length
+        if cp_size == 1:
+            pieces.append(row)
+            continue
+        chunks = row.view(2 * cp_size, length // (2 * cp_size))
+        pieces.extend((chunks[cp_rank], chunks[2 * cp_size - cp_rank - 1]))
+    if offset != full_tokens.numel():
+        raise ValueError(
+            f"packed lengths sum to {offset}, tensor has {full_tokens.numel()} tokens"
+        )
+    return torch.cat(pieces)
 
 
 def _config() -> K3Config:
@@ -52,11 +81,25 @@ def main() -> None:
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
+    cp_size = int(os.environ.get("K3_CP_SIZE", "2"))
+    tp_size = 2
+    if cp_size not in (1, 2, 4) or world_size % (tp_size * cp_size):
+        raise RuntimeError(
+            "K3_CP_SIZE must be one of 1, 2, or 4 and divide the eight-rank "
+            f"topology with TP={tp_size}; got CP={cp_size}"
+        )
+    ep_size = world_size // (tp_size * cp_size)
 
     bundle = build_model(
         _config(),
         impl_cfg=ImplConfig(
-            parallel=ParallelConfig(tp=2, ep=2, etp=1, pp=1, cp=2),
+            parallel=ParallelConfig(
+                tp=tp_size,
+                ep=ep_size,
+                etp=1,
+                pp=1,
+                cp=cp_size,
+            ),
             device=f"cuda:{local_rank}",
             dtype="bfloat16",
             use_thd=True,
@@ -77,11 +120,14 @@ def main() -> None:
     )
 
     observed: dict[str, int] = {}
+    protocol_input_ids = None
 
     def capture_model_input(_module, _args, kwargs) -> None:
+        nonlocal protocol_input_ids
         packed_seq_params = kwargs["packed_seq_params"]
         observed["protocol_local_tokens"] = int(kwargs["input_ids"].shape[1])
         observed["local_cp_size"] = int(packed_seq_params.local_cp_size)
+        protocol_input_ids = kwargs["input_ids"].detach().flatten().clone()
 
     def capture_first_layer_input(_module, args) -> None:
         observed["first_layer_sequence"] = int(args[0].shape[0])
@@ -103,6 +149,41 @@ def main() -> None:
             "packed THD must be CP-split once in the protocol and not again "
             f"in the model: observed={observed}"
         )
+    if protocol_input_ids is None:
+        raise AssertionError(
+            "model input hook did not capture protocol-local token ids"
+        )
+    expected_input_ids = _expected_local_tokens(
+        input_ids,
+        lengths,
+        cp_rank=bundle.parallel_state.cp_rank,
+        cp_size=bundle.parallel_state.cp_size,
+    )
+    if not torch.equal(protocol_input_ids, expected_input_ids):
+        raise AssertionError(
+            "packed THD protocol changed token identity/order: "
+            f"cp_rank={bundle.parallel_state.cp_rank}, "
+            f"actual={protocol_input_ids.tolist()}, "
+            f"expected={expected_input_ids.tolist()}"
+        )
+    if cp_size == 1:
+        gathered_tokens = protocol_input_ids
+    else:
+        cp_parts = [torch.empty_like(protocol_input_ids) for _ in range(cp_size)]
+        dist.all_gather(
+            cp_parts,
+            protocol_input_ids,
+            group=bundle.parallel_state.cp_group,
+        )
+        gathered_tokens = torch.cat(cp_parts)
+    if not torch.equal(
+        torch.sort(gathered_tokens).values,
+        torch.sort(input_ids).values,
+    ):
+        raise AssertionError(
+            "packed THD CP shards must conserve every input token exactly once: "
+            f"gathered={gathered_tokens.tolist()}, full={input_ids.tolist()}"
+        )
 
     loss = output["loss"]
     if not torch.isfinite(loss):
@@ -117,9 +198,11 @@ def main() -> None:
 
     result = {
         "world_size": world_size,
-        "topology": {"tp": 2, "ep": 2, "cp": 2},
+        "topology": {"tp": tp_size, "ep": ep_size, "cp": cp_size},
         "lengths": lengths,
         **observed,
+        "token_order_parity": True,
+        "token_multiset_conserved": True,
         "loss": float(loss.detach()),
         "grad_norm": float(grad_norm),
         "non_skip": True,

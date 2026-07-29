@@ -182,11 +182,14 @@ converts routes and the caller-provided mask through the same THD/CP/TP layout.
 For packed THD with context parallelism, pass the runtime `PackedBatch` to the
 bundle's `forward_step`. The shared protocol performs the packing-aware CP split
 once and marks `packed_seq_params.local_cp_size`; the model consumes that local
-layout without slicing hidden states, labels, or the loss mask again. A reduced
-TP2/EP2/CP2 forward/backward example is executable with:
+layout without slicing hidden states, labels, or the loss mask again. Reduced
+eight-rank CP1/2/4 forward/backward examples are executable with:
 
 ```bash
-torchrun --standalone --nproc-per-node=8 tests/gpu/k3_thd_cp_smoke.py
+for cp in 1 2 4; do
+  K3_CP_SIZE="${cp}" torchrun --standalone --nproc-per-node=8 \
+    tests/gpu/k3_thd_cp_smoke.py
+done
 ```
 
 Weight-only MXFP4 fake quantization is an explicit model-build option:
