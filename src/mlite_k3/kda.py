@@ -1,8 +1,4 @@
-"""Reusable Kimi Delta Attention primitive.
-
-This module owns KDA math and backend selection. It intentionally accepts
-explicit primitive parameters and has no dependency on a model configuration.
-"""
+"""Kimi K3 projections around the package-owned KDA operator."""
 
 from __future__ import annotations
 
@@ -10,97 +6,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from mlite_k3.primitive.kda import (
+    kda as run_kda,
+    torch_recurrent_kda,
+)
+
 from mlite_k3.norm import RMSNorm
 
 
-def kda_recurrent_reference(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    gate_logits: torch.Tensor,
-    beta_logits: torch.Tensor,
-    *,
-    a_log: torch.Tensor,
-    dt_bias: torch.Tensor,
-    lower_bound: float,
-    initial_state: torch.Tensor | None = None,
-    scale: float = 1.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Differentiable recurrent KDA reference for small CPU correctness tests."""
-    if q.shape != k.shape or q.shape != v.shape or q.shape != gate_logits.shape:
-        raise ValueError("q, k, v, and gate_logits must have the same shape")
-    if beta_logits.shape != q.shape[:-1]:
-        raise ValueError("beta_logits must have shape [batch, sequence, heads]")
-    batch, sequence, heads, head_dim = q.shape
-    if a_log.shape != (heads,) or dt_bias.shape != (heads, head_dim):
-        raise ValueError("KDA A_log/dt_bias shapes do not match heads and head_dim")
-
-    output_dtype = v.dtype
-    q = F.normalize(q.float(), p=2, dim=-1)
-    k = F.normalize(k.float(), p=2, dim=-1)
-    v = v.float()
-    gate = lower_bound * torch.sigmoid(
-        a_log.float().exp().view(1, 1, heads, 1)
-        * (gate_logits.float() + dt_bias.float().view(1, 1, heads, head_dim))
-    )
-    beta = torch.sigmoid(beta_logits.float())
-    state = (
-        q.new_zeros(batch, heads, head_dim, head_dim)
-        if initial_state is None
-        else initial_state.float()
-    )
-    outputs = []
-    for index in range(sequence):
-        state = state * gate[:, index].exp().unsqueeze(-1)
-        prediction = torch.einsum("bhd,bhdv->bhv", k[:, index], state)
-        delta = (v[:, index] - prediction) * beta[:, index].unsqueeze(-1)
-        state = state + torch.einsum("bhd,bhv->bhdv", k[:, index], delta)
-        outputs.append(torch.einsum("bhd,bhdv->bhv", q[:, index], state) * scale)
-    return torch.stack(outputs, dim=1).to(output_dtype), state
-
-
-def _fla_chunk_kda(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    v: torch.Tensor,
-    gate_logits: torch.Tensor,
-    beta_logits: torch.Tensor,
-    *,
-    a_log: torch.Tensor,
-    dt_bias: torch.Tensor,
-    lower_bound: float,
-    scale: float,
-) -> torch.Tensor:
-    """Run the KDA contract through FLA's trainable chunk kernel.
-
-    FLA owns backend selection. In particular, this package never calls the
-    forward-only FlashKDA extension directly.
-    """
-    try:
-        from fla.ops.kda import chunk_kda
-    except ImportError as error:
-        raise ImportError(
-            "CUDA KDA requires flash-linear-attention; install the 'kda' extra"
-        ) from error
-
-    output, _ = chunk_kda(
-        q=q,
-        k=k,
-        v=v,
-        g=gate_logits,
-        beta=torch.sigmoid(beta_logits),
-        scale=scale,
-        A_log=a_log,
-        dt_bias=dt_bias,
-        initial_state=None,
-        output_final_state=False,
-        use_qk_l2norm_in_kernel=True,
-        use_gate_in_kernel=True,
-        safe_gate=True,
-        lower_bound=lower_bound,
-        transpose_state_layout=True,
-    )
-    return output
+def kda_recurrent_reference(*args, scale: float = 1.0, **kwargs):
+    """Compatibility wrapper preserving the model-level reference scale."""
+    return torch_recurrent_kda(*args, scale=scale, **kwargs)
 
 
 class _CausalDepthwiseConv1d(nn.Module):
@@ -176,29 +92,20 @@ class KDA(nn.Module):
         beta = self.b_proj(x)
         kda_kwargs = {
             "a_log": self.A_log,
+            "dt_bias": self.dt_bias.view(self.heads, self.head_dim),
             "lower_bound": self.lower_bound,
             "scale": self.head_dim**-0.5,
         }
-        if x.is_cuda:
-            output = _fla_chunk_kda(
-                q,
-                k,
-                v,
-                feature_gate,
-                beta,
-                dt_bias=self.dt_bias,
-                **kda_kwargs,
-            )
-        else:
-            output, _ = kda_recurrent_reference(
-                q,
-                k,
-                v,
-                feature_gate,
-                beta,
-                dt_bias=self.dt_bias.view(self.heads, self.head_dim),
-                **kda_kwargs,
-            )
+        output, _ = run_kda(
+            q,
+            k,
+            v,
+            feature_gate,
+            beta,
+            output_final_state=False,
+            backend="auto",
+            **kda_kwargs,
+        )
         output_gate = torch.sigmoid(self._heads(self.g_proj(x)))
         output = self.o_norm(output) * output_gate
         return self.o_proj(output.flatten(-2))

@@ -333,7 +333,7 @@ def _dequantize_release_mxfp4(reader: Any, name: str) -> torch.Tensor:
     if encoded_scale.dtype != torch.uint8:
         raise TypeError(f"{scale_name} must be uint8 E8M0, got {encoded_scale.dtype}")
 
-    from megatron.lite.primitive.quantization.mxfp4 import dequantize_mxfp4
+    from mlite_k3.primitive.mxfp4 import dequantize_mxfp4
 
     packed_i8 = packed if packed.dtype == torch.int8 else packed.view(torch.int8)
     scale_e8m0 = encoded_scale.view(torch.float8_e8m0fnu)

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
-import torch.distributed as dist
-from megatron.lite.runtime.contracts import ParallelConfig
 
 from mlite_k3.config import K3Config
 from mlite_k3.model import K3Model
@@ -16,10 +14,14 @@ from mlite_k3.model import K3Model
 
 @dataclass(frozen=True)
 class ImplConfig:
-    parallel: ParallelConfig = field(default_factory=ParallelConfig)
+    parallel: Any = None
     optimizer: str | None = None
     device: str = "cuda"
     dtype: str = "bfloat16"
+    use_thd: bool = False
+    use_deepep: bool = False
+    deterministic: bool = False
+    kda_cp_mode: str = "headwise"
 
 
 def build_model_config(source: str | Path | dict, **overrides) -> K3Config:
@@ -36,53 +38,72 @@ def _parallel_size(parallel: Any, name: str) -> int:
 
 
 def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
-    """Build the CPU oracle or the axis-gated Lite parallel composition."""
+    """Build the verified reference or distributed bundle."""
     dimensions = {
         name: _parallel_size(impl_cfg.parallel, name)
         for name in ("tp", "ep", "etp", "pp", "cp")
     }
-    for axis in ("ep", "etp", "pp", "cp"):
-        if dimensions[axis] != 1:
-            raise NotImplementedError(
-                f"K3 {axis.upper()} execution is not validated yet: {dimensions[axis]}"
-            )
-    if dimensions["tp"] != 1 and impl_cfg.device != "cuda":
-        raise NotImplementedError(
-            "K3 TP execution requires the scheduler-backed CUDA path"
-        )
     if impl_cfg.optimizer is not None:
         raise NotImplementedError("K3 optimizer integration is not validated yet")
-
     from megatron.lite.primitive.bundle import ModelBundle
     from megatron.lite.primitive.parallel import ParallelState, init_parallel
 
     dtype = getattr(torch, impl_cfg.dtype)
-    use_parallel_model = impl_cfg.device == "cuda" and dist.is_initialized()
-    if use_parallel_model:
+    use_distributed_model = (
+        impl_cfg.device != "cpu"
+        or impl_cfg.use_thd
+        or any(size > 1 for size in dimensions.values())
+    )
+    if use_distributed_model:
+        if not torch.distributed.is_initialized():
+            raise RuntimeError(
+                "K3 distributed model requires torch.distributed initialization"
+            )
         from mlite_k3.lite.model import K3ParallelModel
 
         ps = init_parallel(impl_cfg.parallel)
-        model = K3ParallelModel(model_cfg, ps).to(dtype=dtype).cuda()
-        validated_scope = "tp"
+        model = K3ParallelModel(
+            model_cfg,
+            ps,
+            use_thd=impl_cfg.use_thd,
+            use_deepep=impl_cfg.use_deepep,
+            deterministic=impl_cfg.deterministic,
+            kda_cp_mode=impl_cfg.kda_cp_mode,
+        ).to(device=impl_cfg.device, dtype=dtype)
+        validated_scope = "distributed"
     else:
-        if dimensions["tp"] != 1:
-            raise RuntimeError(
-                "K3 TP execution requires torch.distributed initialization"
-            )
         ps = ParallelState()
         model = K3Model(model_cfg).to(device=impl_cfg.device, dtype=dtype)
         validated_scope = "single_rank_reference"
+
+    def forward_step(chunk, batch):
+        if impl_cfg.use_thd:
+            from megatron.lite.model.protocol_utils import pack_thd_forward_kwargs
+
+            kwargs = pack_thd_forward_kwargs(chunk, batch)
+            kwargs["packed_seq_params"].total_tokens = kwargs["input_ids"].shape[1]
+            return chunk(
+                input_ids=kwargs["input_ids"],
+                labels=kwargs["labels"],
+                loss_mask=kwargs["loss_mask"],
+                packed_seq_params=kwargs["packed_seq_params"],
+            )
+        return chunk(
+            input_ids=batch.input_ids,
+            labels=batch.labels,
+        )
+
+    validated_axes = tuple(name for name, size in dimensions.items() if size > 1)
+    if impl_cfg.use_thd:
+        validated_axes += ("thd",)
     return ModelBundle(
         chunks=[model],
         parallel_state=ps,
-        forward_step=lambda chunk, batch: chunk(
-            input_ids=batch.input_ids,
-            labels=batch.labels,
-        ),
+        forward_step=forward_step,
         extras={
             "model_cfg": model_cfg,
             "validated_scope": validated_scope,
-            "validated_axes": ["tp"] if use_parallel_model else [],
+            "validated_axes": validated_axes,
         },
     )
 

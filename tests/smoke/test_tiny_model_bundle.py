@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
 import torch
 
 from mlite_k3.config import K3Config
@@ -68,3 +71,46 @@ def test_bfloat16_bundle_runs_with_float32_kda_gates_and_router_math():
     assert output["logits"].dtype == torch.bfloat16
     assert torch.isfinite(output["logits"]).all()
     assert torch.isfinite(output["loss"])
+
+
+def test_protocol_releases_pp_axis_but_still_requires_distributed_initialization():
+    parallel = SimpleNamespace(tp=1, ep=1, etp=1, pp=2, cp=1)
+
+    with pytest.raises(RuntimeError, match="distributed initialization"):
+        build_model(
+            _tiny_config(),
+            impl_cfg=ImplConfig(
+                parallel=parallel,
+                device="cpu",
+                dtype="float32",
+            ),
+        )
+
+
+def test_protocol_releases_cp_axis_but_requires_distributed_initialization():
+    parallel = SimpleNamespace(tp=1, ep=1, etp=1, pp=1, cp=2)
+
+    with pytest.raises(RuntimeError, match="distributed initialization"):
+        build_model(
+            _tiny_config(),
+            impl_cfg=ImplConfig(
+                parallel=parallel,
+                device="cpu",
+                dtype="float32",
+            ),
+        )
+
+
+def test_protocol_releases_thd_axis_but_requires_distributed_initialization():
+    parallel = SimpleNamespace(tp=1, ep=1, etp=1, pp=1, cp=1)
+
+    with pytest.raises(RuntimeError, match="distributed initialization"):
+        build_model(
+            _tiny_config(),
+            impl_cfg=ImplConfig(
+                parallel=parallel,
+                device="cpu",
+                dtype="float32",
+                use_thd=True,
+            ),
+        )

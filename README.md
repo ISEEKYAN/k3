@@ -36,6 +36,12 @@ execution or performance claim. Context parallelism is not available on the
 initial FLA path. The bounded torch recurrence is used only by the tiny CPU
 correctness path.
 
+The model projection wrapper consumes the K3-owned operator in
+`mlite_k3.primitive.kda`. KDA recurrence and backend dispatch therefore ship
+with this package. Checkpoint MXFP4 dequantization likewise lives in
+`mlite_k3.primitive.mxfp4`; neither path requires a K3-specific change in
+Megatron Lite.
+
 ## Tutorial 1: install the package
 
 Clone Megatron Lite next to this external package, then create an isolated
@@ -133,13 +139,14 @@ smokes:
 ```bash
 python -m pytest -q \
   tests/unit \
+  tests/parity/test_tiny_proxy_parity.py \
   tests/smoke/test_registry_integration.py \
   tests/smoke/test_tiny_model_bundle.py
 ```
 
 These checks require no CUDA. The verified checkpoint and numerical scope is
-the reduced proxy below; GPU and distributed claims require their own
-non-skipped tests.
+the reduced checkpoint proxy and independent functional proxy below; GPU and
+distributed claims require their own non-skipped tests.
 
 ## Verified first-release checkpoint proxy
 
@@ -154,18 +161,25 @@ are `0.0` and `2.384185791015625e-07`; final-logit maximum absolute difference
 is `2.9802322387695312e-07`. Plain export/reload restores every parameter and
 the logits bit-for-bit.
 
-Expert, context, tensor, and pipeline parallelism, THD sequences, GPU kernels,
-and short training are deferred and have not been validated. They require the
-corresponding shared-primitives and checkpoint-placement pull request in
-Megatron Lite, followed by scheduler-backed tests. These paths must not be
-inferred from the single-rank proxy.
+The independent functional tiny proxy retains one
+KDA layer, one gated-MLA layer, one dense MLP, and one four-expert LatentMoE
+layer. With seed `20260727`, its maximum absolute differences were
+`8.940696716308594e-07` across layer outputs,
+`3.5762786865234375e-07` for logits, `0.0` for loss, and
+`2.384185791015625e-07` across the six representative gradients checked.
+This is reduced CPU proxy evidence, not execution of the full public model
+class or checkpoint-conversion parity.
+
+These CPU proxies do not establish GPU, distributed, or short-training
+support. Those capabilities require their own scheduler-backed
+forward/backward tests and are documented separately below.
 
 ## The four-stage model-support workflow
 
 1. Freeze the public Kimi K3 configuration, custom modeling code, checkpoint
    index, and quantization metadata.
-2. Map KDA, gated MLA, LatentMoE, and parallel capabilities to validated
-   Megatron Lite primitives.
+2. Implement KDA, gated MLA, LatentMoE, and parallel capabilities in the
+   K3-owned primitive layer against explicit Megatron Lite protocols.
 3. Implement configuration, the model protocol, and exhaustive checkpoint
    mappings without modifying Megatron Lite.
 4. Validate CPU contracts first, then independent tiny-model parity, real
@@ -193,11 +207,12 @@ reference path.
 
 Keep model identity and composition in `src/mlite_k3/`, expose a single explicit
 registration entry point, and keep fast CPU contracts in `tests/unit/`.
-Reusable KDA behavior belongs in the model-independent `kda.py`; gated-MLA and
-LatentMoE behavior belongs in `primitives.py`; `model.py` owns configuration
-mapping, layer scheduling, and model-specific composition. K3-specific
-primitives remain self-contained in this repository and require no K3 changes
-to the Megatron Lite repository.
+Reusable KDA recurrence/backend selection belongs in
+`mlite_k3.primitive.kda`; `kda.py` owns K3 projections and output gating.
+Gated-MLA and LatentMoE behavior belongs in `primitives.py`; `model.py` owns
+configuration mapping, layer scheduling, and model-specific composition.
+K3-specific primitives remain self-contained in this repository and require no
+K3 changes to the Megatron Lite repository.
 
 When adding a capability, add the smallest failing test first and document only
 the behavior that the test actually exercises.

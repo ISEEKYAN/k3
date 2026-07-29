@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import sys
-from types import ModuleType
-
 import torch
 
 from mlite_k3.config import K3Config
@@ -64,80 +61,6 @@ def test_kda_reference_recurrence_matches_one_token_equation():
     torch.testing.assert_close(out, torch.tensor([[[[1.0, -0.5]]]]))
 
 
-def test_kda_cuda_contract_calls_fla_chunk_kernel(monkeypatch):
-    from mlite_k3.kda import _fla_chunk_kda
-
-    calls = []
-    kda_module = ModuleType("fla.ops.kda")
-
-    def chunk_kda(**kwargs):
-        calls.append(kwargs)
-        return kwargs["v"] + 1, None
-
-    kda_module.chunk_kda = chunk_kda
-    monkeypatch.setitem(sys.modules, "fla", ModuleType("fla"))
-    monkeypatch.setitem(sys.modules, "fla.ops", ModuleType("fla.ops"))
-    monkeypatch.setitem(sys.modules, "fla.ops.kda", kda_module)
-    q = torch.zeros(1, 2, 1, 2)
-    beta_logits = torch.tensor([[[-2.0], [2.0]]])
-    result = _fla_chunk_kda(
-        q,
-        q,
-        q,
-        q,
-        beta_logits,
-        a_log=torch.zeros(1),
-        dt_bias=torch.zeros(2),
-        lower_bound=-5.0,
-        scale=2**-0.5,
-    )
-
-    assert torch.equal(result, torch.ones_like(q))
-    assert calls[0]["use_qk_l2norm_in_kernel"] is True
-    assert calls[0]["use_gate_in_kernel"] is True
-    torch.testing.assert_close(calls[0]["beta"], torch.sigmoid(beta_logits))
-    assert "use_beta_sigmoid_in_kernel" not in calls[0]
-    assert calls[0]["safe_gate"] is True
-    assert calls[0]["lower_bound"] == -5.0
-    assert calls[0]["scale"] == 2**-0.5
-    assert calls[0]["transpose_state_layout"] is True
-    assert "state_v_first" not in calls[0]
-    assert calls[0]["dt_bias"].shape == (2,)
-
-
-def test_kda_cuda_contract_does_not_call_flash_kda_directly(monkeypatch):
-    from mlite_k3.kda import _fla_chunk_kda
-
-    monkeypatch.setitem(sys.modules, "fla", ModuleType("fla"))
-    monkeypatch.delitem(sys.modules, "fla.ops", raising=False)
-    monkeypatch.delitem(sys.modules, "fla.ops.kda", raising=False)
-    direct_backend = ModuleType("flash_kda")
-
-    def forbidden_direct_call(*args, **kwargs):
-        raise AssertionError("FlashKDA must only be selected behind FLA")
-
-    direct_backend.fwd = forbidden_direct_call
-    monkeypatch.setitem(sys.modules, "flash_kda", direct_backend)
-    q = torch.zeros(1, 2, 1, 2)
-
-    try:
-        _fla_chunk_kda(
-            q,
-            q,
-            q,
-            q,
-            torch.zeros(1, 2, 1),
-            a_log=torch.zeros(1),
-            dt_bias=torch.zeros(2),
-            lower_bound=-5.0,
-            scale=2**-0.5,
-        )
-    except ImportError as error:
-        assert "flash-linear-attention" in str(error)
-    else:
-        raise AssertionError("CUDA KDA must fail loudly when FLA is unavailable")
-
-
 def test_hybrid_model_uses_kda_mla_and_latent_moe_in_real_forward_backward():
     from mlite_k3.model import K3Model
     from mlite_k3.kda import KDA
@@ -195,6 +118,41 @@ def test_kda_short_convolutions_match_bias_free_checkpoint_contract():
         convolution = getattr(kda, name).conv
         assert convolution.bias is None
         assert f"layers.0.self_attention.{name}.conv.bias" not in model.state_dict()
+
+
+def test_attention_residual_accepts_explicit_epsilon_for_te_norm_contract():
+    from mlite_k3.model import _apply_attention_residual
+
+    norm = torch.nn.Module()
+    norm.weight = torch.nn.Parameter(torch.ones(4))
+    projection = torch.nn.Linear(4, 1, bias=False)
+    prefix_sum = torch.randn(2, 4)
+    block_residual = torch.randn(2, 1, 4)
+
+    output = _apply_attention_residual(
+        prefix_sum,
+        block_residual,
+        projection,
+        norm,
+        variance_epsilon=1e-6,
+    )
+
+    assert output.shape == prefix_sum.shape
+    assert torch.isfinite(output).all()
+
+
+def test_latent_moe_keeps_router_math_in_fp32_for_bfloat16_model():
+    from mlite_k3.primitives import LatentMoE
+
+    module = LatentMoE(tiny_config()).to(dtype=torch.bfloat16)
+    hidden_states = torch.randn(2, 4, 16, dtype=torch.bfloat16)
+
+    output = module(hidden_states)
+    output.float().square().mean().backward()
+
+    assert output.dtype == torch.bfloat16
+    assert module.router.weight.grad is not None
+    assert torch.isfinite(module.router.weight.grad).all()
 
 
 def test_protocol_is_importable_and_builds_tiny_config_from_public_shape():

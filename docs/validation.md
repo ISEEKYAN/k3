@@ -117,6 +117,28 @@ internal tensors ad hoc. Compare:
 Freeze seeds, input tokens, dtype, and tolerances before inspecting results.
 The two compared paths must not share the implementation under test.
 
+#### Verified reduced functional proxy
+
+The CPU proxy in `tests/parity/test_tiny_proxy_parity.py` uses seed
+`20260727`, two layers, four routed experts, two selected experts per token,
+float32, and fixed token/label batches. The production path is compared with a
+separate functional oracle that reads copied weights but does not call the
+production KDA, MLA, LatentMoE, decoder-layer, or model forwards.
+
+Its measured maximum absolute differences are:
+
+| Surface | Maximum absolute difference |
+| --- | ---: |
+| KDA layer output | `2.9802322387695312e-08` |
+| gated-MLA/LatentMoE layer output | `8.940696716308594e-07` |
+| logits | `3.5762786865234375e-07` |
+| loss | `0.0` |
+| six representative gradients | `2.384185791015625e-07` |
+
+This satisfies the reduced tiny-config functional proxy only. It does not use
+the full public model class or load weights through the public checkpoint
+mapping, so the complete Stage 2 contract above remains not-done.
+
 ### Stage 3: checkpoint and quantization
 
 Exercise the public checkpoint index and compressed-tensors metadata without
@@ -152,11 +174,13 @@ and assert the requested topology and communication path. The minimum matrix is:
 If a proxy topology is used, report it as proxy evidence. It must not be
 described as a full-scale Kimi K3 run.
 
-Stage 4 is deferred and not done. Expert, context, tensor, and pipeline
-parallelism, THD sequences, and short training require the corresponding
-Megatron Lite shared-primitives and checkpoint-placement pull request before
-scheduler-backed validation can begin. FlashKDA direct dispatch is likewise a
-forward-only optional acceleration path and has not been validated.
+For the first release, every Stage 4 item is deferred and not-done: one-rank
+GPU parity, short training, EP, CP, packed THD, combined CP+EP, and PP. The
+unlock path is to extend the K3-owned primitive layer with tensor/expert/context
+sharding, packed-sequence state transfer, checkpoint placement, and pipeline
+ownership, followed by scheduler-backed forward/backward topology tests.
+FlashKDA direct dispatch is also not-done; the approved training path is FLA
+`chunk_kda`.
 
 ## Evidence and publication rules
 
