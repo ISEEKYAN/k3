@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import json
 import os
+import re
 import statistics
 import time
 from dataclasses import asdict
@@ -154,6 +155,94 @@ def parameter_numel_across_ranks(
     return values
 
 
+def _canonical_parameter_name(model: torch.nn.Module, name: str) -> str:
+    match = re.match(r"^layers\.(\d+)(\..+)$", name)
+    if match is None:
+        return name
+    local_index = int(match.group(1))
+    global_index = model.layer_indices[local_index]
+    return f"layers.{global_index}{match.group(2)}"
+
+
+def _logical_parameter_multiplier(
+    model: torch.nn.Module,
+    name: str,
+    ps,
+) -> int:
+    modules = dict(model.named_modules())
+    parts = name.split(".")
+    for end in range(len(parts) - 1, 0, -1):
+        path = ".".join(parts[:end])
+        module = modules.get(path)
+        if module is None:
+            continue
+        relative_name = ".".join(parts[end:])
+        class_name = type(module).__name__
+        if class_name in {"Experts", "K3LatentExperts"} and relative_name.startswith(
+            ("fc1.", "fc2.")
+        ):
+            return ps.ep_size * ps.etp_size
+        if class_name in {
+            "ColumnParallelLinear",
+            "RowParallelLinear",
+            "VanillaColumnParallelLinear",
+            "VocabParallelEmbedding",
+            "VocabParallelOutput",
+            "_LocalLinear",
+        } and relative_name in {
+            "weight",
+            "linear.weight",
+            "embedding.weight",
+            "col.linear.weight",
+        }:
+            return ps.tp_size
+        if class_name in {"K3FullRankGatedDeltaNet", "_K3FullRankDeltaNet"}:
+            if relative_name in {
+                "q_conv1d.weight",
+                "k_conv1d.weight",
+                "v_conv1d.weight",
+                "A_log",
+                "dt_bias",
+            }:
+                return ps.tp_size
+    return 1
+
+
+def global_unique_parameter_numel(
+    model: torch.nn.Module,
+    ps,
+) -> dict[str, int]:
+    local_records = []
+    for name, parameter in model.named_parameters():
+        multiplier = _logical_parameter_multiplier(model, name, ps)
+        local_records.append(
+            (
+                _canonical_parameter_name(model, name),
+                parameter.numel(),
+                multiplier,
+                parameter.numel() * multiplier,
+            )
+        )
+    gathered: list[list[tuple[str, int, int, int]] | None] = [
+        None for _ in range(dist.get_world_size())
+    ]
+    dist.all_gather_object(gathered, local_records)
+    logical_by_name: dict[str, int] = {}
+    for rank_records in gathered:
+        assert rank_records is not None
+        for name, _local_numel, _multiplier, logical_numel in rank_records:
+            previous = logical_by_name.setdefault(name, logical_numel)
+            if previous != logical_numel:
+                raise AssertionError(
+                    "inconsistent reconstructed global numel for "
+                    f"{name}: {previous} != {logical_numel}"
+                )
+    return {
+        "global_unique": sum(logical_by_name.values()),
+        "canonical_parameter_keys": len(logical_by_name),
+    }
+
+
 def optimizer_state_bytes(optimizer: torch.optim.Optimizer) -> int:
     return sum(
         value.numel() * value.element_size()
@@ -185,6 +274,20 @@ def benchmark(
     before_model = torch.cuda.memory_allocated(device)
     model = build(name, spec, ps, device)
     parameter_numel = parameter_numel_across_ranks(model, device)
+    global_unique_numel = global_unique_parameter_numel(model, ps)
+    if dist.get_rank() == 0:
+        print(
+            "BUILD_NUMEL="
+            + json.dumps(
+                {
+                    "name": name,
+                    "placement_weighted": parameter_numel,
+                    **global_unique_numel,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
     model_storage = torch.cuda.memory_allocated(device) - before_model
     batch = input_batch(spec, device)
     optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE)
@@ -268,6 +371,7 @@ def benchmark(
         "sequence_length": spec.sequence_length,
         "warmup_steps": spec.warmup_steps,
         "measure_steps": spec.measure_steps,
+        "global_unique_parameter_numel": global_unique_numel,
         "parameter_numel": parameter_numel,
         "step_ms_median_slowest_rank": step_ms,
         "step_ms_samples_slowest_rank": elapsed,
@@ -341,6 +445,32 @@ def main() -> None:
     wandb_run = init_wandb(spec, contract)
     results = [benchmark(name, spec, ps, device) for name in ("k3", "k2")]
     k3_result, k2_result = results
+    k3_global_unique = int(k3_result["global_unique_parameter_numel"]["global_unique"])
+    k2_global_unique = int(k2_result["global_unique_parameter_numel"]["global_unique"])
+    global_unique_cross_check = {
+        "k3_build": k3_global_unique,
+        "k3_formula": int(contract["k3_total"]),
+        "k3_relative_mismatch": abs(k3_global_unique - int(contract["k3_total"]))
+        / int(contract["k3_total"]),
+        "k2_build": k2_global_unique,
+        "k2_formula": int(contract["k2_total"]),
+        "k2_relative_mismatch": abs(k2_global_unique - int(contract["k2_total"]))
+        / int(contract["k2_total"]),
+        "limit": 0.02,
+    }
+    if rank == 0:
+        print(
+            "GLOBAL_UNIQUE_NUMEL_CONTRACT="
+            + json.dumps(global_unique_cross_check, sort_keys=True),
+            flush=True,
+        )
+    if (
+        global_unique_cross_check["k3_relative_mismatch"] >= 0.02
+        or global_unique_cross_check["k2_relative_mismatch"] >= 0.02
+    ):
+        raise AssertionError(
+            "reconstructed global-unique numel disagrees with formula by >=2%"
+        )
     k3_realized_numel = int(k3_result["parameter_numel"]["summed_rank_local"])
     k2_realized_numel = int(k2_result["parameter_numel"]["summed_rank_local"])
     realized_numel_mismatch = abs(k3_realized_numel - k2_realized_numel) / max(
@@ -379,6 +509,7 @@ def main() -> None:
         "contract": {
             "count_scope": "whole_model_architecture_not_parallel_shard",
             **contract,
+            "global_unique_build_cross_check": global_unique_cross_check,
             "built_model_cross_check": built_numel_cross_check,
             "dtype": "bfloat16",
             "optimizer": "SGD",
