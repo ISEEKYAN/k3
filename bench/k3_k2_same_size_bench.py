@@ -138,6 +138,22 @@ def maximum_across_ranks(value: float | int, device: torch.device) -> float:
     return float(tensor.item())
 
 
+def parameter_numel_across_ranks(
+    model: torch.nn.Module, device: torch.device
+) -> dict[str, int]:
+    local_numel = sum(parameter.numel() for parameter in model.parameters())
+    values: dict[str, int] = {"local": local_numel}
+    for label, op in (
+        ("local_min", dist.ReduceOp.MIN),
+        ("local_max", dist.ReduceOp.MAX),
+        ("summed_rank_local", dist.ReduceOp.SUM),
+    ):
+        tensor = torch.tensor(local_numel, device=device, dtype=torch.int64)
+        dist.all_reduce(tensor, op=op)
+        values[label] = int(tensor.item())
+    return values
+
+
 def optimizer_state_bytes(optimizer: torch.optim.Optimizer) -> int:
     return sum(
         value.numel() * value.element_size()
@@ -168,6 +184,7 @@ def benchmark(
     torch.cuda.reset_peak_memory_stats(device)
     before_model = torch.cuda.memory_allocated(device)
     model = build(name, spec, ps, device)
+    parameter_numel = parameter_numel_across_ranks(model, device)
     model_storage = torch.cuda.memory_allocated(device) - before_model
     batch = input_batch(spec, device)
     optimizer = torch.optim.SGD(model.parameters(), lr=LEARNING_RATE)
@@ -251,6 +268,7 @@ def benchmark(
         "sequence_length": spec.sequence_length,
         "warmup_steps": spec.warmup_steps,
         "measure_steps": spec.measure_steps,
+        "parameter_numel": parameter_numel,
         "step_ms_median_slowest_rank": step_ms,
         "step_ms_samples_slowest_rank": elapsed,
         "tokens_per_second_per_gpu": (
@@ -323,6 +341,28 @@ def main() -> None:
     wandb_run = init_wandb(spec, contract)
     results = [benchmark(name, spec, ps, device) for name in ("k3", "k2")]
     k3_result, k2_result = results
+    k3_realized_numel = int(k3_result["parameter_numel"]["summed_rank_local"])
+    k2_realized_numel = int(k2_result["parameter_numel"]["summed_rank_local"])
+    realized_numel_mismatch = abs(k3_realized_numel - k2_realized_numel) / max(
+        k3_realized_numel, k2_realized_numel
+    )
+    realized_contract = {
+        "scope": "sum_of_rank_local_parameter_numel_under_identical_parallel_layout",
+        "k3": k3_realized_numel,
+        "k2": k2_realized_numel,
+        "relative_mismatch": realized_numel_mismatch,
+        "limit": 0.02,
+    }
+    if rank == 0:
+        print(
+            "BUILT_NUMEL_CONTRACT=" + json.dumps(realized_contract, sort_keys=True),
+            flush=True,
+        )
+    if realized_numel_mismatch > 0.02:
+        raise AssertionError(
+            "built model parameter numel mismatch exceeds 2%: "
+            f"{realized_numel_mismatch:.6%}"
+        )
     speed_ratio = float(k2_result["step_ms_median_slowest_rank"]) / float(
         k3_result["step_ms_median_slowest_rank"]
     )
@@ -339,6 +379,7 @@ def main() -> None:
         "contract": {
             "count_scope": "whole_model_architecture_not_parallel_shard",
             **contract,
+            "built_model_cross_check": realized_contract,
             "dtype": "bfloat16",
             "optimizer": "SGD",
         },
