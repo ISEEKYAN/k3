@@ -105,12 +105,22 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
             from megatron.lite.model.protocol_utils import pack_thd_forward_kwargs
 
             kwargs = pack_thd_forward_kwargs(chunk, batch)
-            kwargs["packed_seq_params"].total_tokens = kwargs["input_ids"].shape[1]
+            packed_seq_params = kwargs["packed_seq_params"]
+            if ps.cp_size == 1:
+                packed_seq_params.local_cp_size = 1
+            elif packed_seq_params.local_cp_size != ps.cp_size:
+                raise ValueError(
+                    "K3 THD protocol must mark CP-local tensors with "
+                    f"local_cp_size={ps.cp_size}"
+                )
+            packed_seq_params.total_tokens = int(
+                packed_seq_params.cu_seqlens_q[-1].item()
+            )
             return chunk(
                 input_ids=kwargs["input_ids"],
                 labels=kwargs["labels"],
                 loss_mask=kwargs["loss_mask"],
-                packed_seq_params=kwargs["packed_seq_params"],
+                packed_seq_params=packed_seq_params,
             )
         return chunk(
             input_ids=batch.input_ids,

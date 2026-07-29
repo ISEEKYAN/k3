@@ -12,12 +12,13 @@ from mlite_k3.lite.thd_contract import (
 )
 
 
-def _packed(total_tokens: int = 8):
+def _packed(total_tokens: int = 8, *, local_cp_size: int | None = 1):
     return SimpleNamespace(
         qkv_format="thd",
         cu_seqlens_q=torch.tensor([0, 3, total_tokens], dtype=torch.int32),
         cu_seqlens_kv=torch.tensor([0, 3, total_tokens], dtype=torch.int32),
         total_tokens=total_tokens,
+        local_cp_size=local_cp_size,
     )
 
 
@@ -52,6 +53,17 @@ def test_plain_thd_requires_exactly_one_model_context_parallel_slice():
     assert thd_requires_context_parallel_slice(packed, cp_size=2)
 
 
+def test_thd_rejects_missing_or_zero_context_parallel_metadata():
+    with pytest.raises(ValueError, match="local_cp_size must be explicitly set"):
+        thd_requires_context_parallel_slice(_packed(local_cp_size=None), cp_size=2)
+    with pytest.raises(ValueError, match="local_cp_size must be positive"):
+        thd_requires_context_parallel_slice(_packed(local_cp_size=0), cp_size=2)
+
+
+def test_single_rank_thd_with_explicit_metadata_needs_no_slice():
+    assert not thd_requires_context_parallel_slice(_packed(), cp_size=1)
+
+
 def test_protocol_local_thd_must_not_be_split_again():
     packed = _packed()
     packed.local_cp_size = 2
@@ -65,6 +77,42 @@ def test_thd_rejects_local_context_parallel_metadata_for_another_topology():
 
     with pytest.raises(ValueError, match="local_cp_size=4.*cp_size=2"):
         thd_requires_context_parallel_slice(packed, cp_size=2)
+
+
+def test_thd_contract_accepts_cp_local_width_against_global_total():
+    tokens = torch.arange(4).view(1, 4)
+
+    validate_thd_inputs(
+        tokens,
+        tokens.clone(),
+        torch.ones_like(tokens),
+        _packed(total_tokens=8, local_cp_size=2),
+    )
+
+
+@pytest.mark.parametrize(
+    ("cu_seqlens", "message"),
+    [
+        ([1, 3, 8], "start at 0"),
+        ([0, 5, 4], "nondecreasing"),
+        ([0, 3, 7], "end at total_tokens"),
+    ],
+)
+def test_thd_contract_rejects_malformed_cu_seqlens(cu_seqlens, message):
+    packed = _packed()
+    packed.cu_seqlens_q = torch.tensor(cu_seqlens, dtype=torch.int32)
+    packed.cu_seqlens_kv = packed.cu_seqlens_q.clone()
+
+    with pytest.raises(ValueError, match=message):
+        validate_thd_inputs(torch.arange(8).view(1, 8), None, None, packed)
+
+
+def test_thd_contract_requires_identical_q_and_kv_cu_seqlens():
+    packed = _packed()
+    packed.cu_seqlens_kv = torch.tensor([0, 4, 8], dtype=torch.int32)
+
+    with pytest.raises(ValueError, match="must match"):
+        validate_thd_inputs(torch.arange(8).view(1, 8), None, None, packed)
 
 
 def _expected_zigzag_tokens(
