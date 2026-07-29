@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 import torch
 
@@ -443,6 +445,111 @@ def iter_hf_weights(
             yield f"{hf_name}_scale", scale.view(torch.uint8)
 
 
+def _checkpoint_tensor(name: str, tensor: torch.Tensor) -> tuple[str, torch.Tensor]:
+    """Detach one export tensor into the contiguous CPU form safetensors needs."""
+    return name, tensor.detach().to(device="cpu").contiguous()
+
+
+def _next_save_group(
+    weights: Iterator[tuple[str, torch.Tensor]], target: str
+) -> list[tuple[str, torch.Tensor]]:
+    """Keep a routed MXFP4 packed/scale pair together in its output shard."""
+    name, tensor = next(weights)
+    group = [_checkpoint_tensor(name, tensor)]
+    if target != "mxfp4" or not name.endswith("_packed"):
+        return group
+
+    base = name.removesuffix("_packed")
+    try:
+        scale_name, scale = next(weights)
+    except StopIteration as error:
+        raise ValueError(f"MXFP4 tensor {name!r} is missing its scale") from error
+    if scale_name != f"{base}_scale":
+        raise ValueError(
+            f"MXFP4 tensor {name!r} must be followed by {base + '_scale'!r}, "
+            f"got {scale_name!r}"
+        )
+    group.append(_checkpoint_tensor(scale_name, scale))
+    return group
+
+
+def _write_json_atomically(path: Path, contents: Mapping[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(contents, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+
+
+def save_hf_weights(
+    model: torch.nn.Module,
+    path: str | Path,
+    config: Any,
+    *,
+    target: str = "bf16",
+    max_shard_size_bytes: int = 5 * 1024**3,
+) -> WeightIndexAudit:
+    """Write a public K3 HF checkpoint as streamed safetensors shards.
+
+    Each shard is atomically published before the index.  The index is itself
+    atomically replaced only after every mapped shard exists, so readers never
+    observe an index pointing at a partially written checkpoint.
+    """
+    if max_shard_size_bytes <= 0:
+        raise ValueError("max_shard_size_bytes must be positive")
+    if target not in ("bf16", "mxfp4"):
+        raise ValueError("target must be 'bf16' or 'mxfp4'")
+
+    from safetensors.torch import save_file
+
+    root = Path(path)
+    root.mkdir(parents=True, exist_ok=True)
+    index: dict[str, str] = {}
+    total_size = 0
+    shard_number = 0
+    shard: dict[str, torch.Tensor] = {}
+    shard_size = 0
+
+    def flush_shard() -> None:
+        nonlocal shard, shard_number, shard_size
+        if not shard:
+            return
+        shard_number += 1
+        filename = f"model-{shard_number:05d}.safetensors"
+        destination = root / filename
+        temporary = root / f".{filename}.tmp"
+        save_file(shard, str(temporary))
+        os.replace(temporary, destination)
+        index.update({name: filename for name in shard})
+        shard = {}
+        shard_size = 0
+
+    weights = iter(iter_hf_weights(model, K3WeightSpec(config), target=target))
+    while True:
+        try:
+            group = _next_save_group(weights, target)
+        except StopIteration:
+            break
+        group_size = sum(tensor.numel() * tensor.element_size() for _, tensor in group)
+        if shard and shard_size + group_size > max_shard_size_bytes:
+            flush_shard()
+        shard.update(group)
+        shard_size += group_size
+        total_size += group_size
+    flush_shard()
+
+    _write_json_atomically(
+        root / "model.safetensors.index.json",
+        {
+            "metadata": {"format": target, "total_size": total_size},
+            "weight_map": index,
+        },
+    )
+    return audit_k3_weight_index({"weight_map": index})
+
+
 def load_hf_weights(
     model: torch.nn.Module,
     path: str | Path,
@@ -550,4 +657,5 @@ __all__ = [
     "load_hf_weights",
     "load_weights_from_reader",
     "parse_k3_quantization_metadata",
+    "save_hf_weights",
 ]

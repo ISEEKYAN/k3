@@ -148,6 +148,30 @@ These checks require no CUDA. The verified checkpoint and numerical scope is
 the reduced checkpoint proxy and independent functional proxy below; GPU and
 distributed claims require their own non-skipped tests.
 
+## Tutorial 5: save a public HF checkpoint
+
+`save_hf_weights` streams tensors into bounded safetensors shards.  It publishes
+each shard and then atomically replaces the HF index, so an index never names a
+partially written shard.  Use `target="bf16"` for a lossless model export or
+`target="mxfp4"` for the public routed-expert compressed-tensors layout:
+
+```python
+from mlite_k3.lite.checkpoint import save_hf_weights
+
+save_hf_weights(
+    model,
+    "./k3-hf",
+    config,
+    target="mxfp4",
+    max_shard_size_bytes=5 * 1024**3,
+)
+```
+
+The resulting `model.safetensors.index.json` has the shard `weight_map`, total
+tensor bytes, and the chosen export format.  MXFP4 `_packed` and `_scale` keys
+are always co-located in a shard; persistent router `expert_bias` remains a
+plain public tensor.
+
 ## R3 replay and MXFP4 QAT contracts
 
 The K3 protocol exports Megatron Lite's standard zigzag-THD replay helpers:

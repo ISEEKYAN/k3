@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 import torch
 import torch.nn as nn
@@ -10,6 +12,7 @@ from mlite_k3.lite.checkpoint import (
     audit_k3_weight_index,
     get_hf_weight,
     iter_hf_weights,
+    save_hf_weights,
     load_weights_from_reader,
     parse_k3_quantization_metadata,
 )
@@ -439,6 +442,59 @@ def test_mxfp4_resync_export_only_packs_routed_expert_weights():
     }
     assert exported[f"{prefix}.w1.weight_packed"].dtype == torch.int8
     assert exported[f"{prefix}.w1.weight_scale"].dtype == torch.uint8
+
+
+@pytest.mark.parametrize("target", ("bf16", "mxfp4"))
+def test_save_hf_weights_writes_shards_and_roundtrips_real_files(tmp_path, target):
+    from megatron.lite.primitive.ckpt.hf_weights import SafeTensorReader
+
+    source = _TinyExpertModel()
+    source.layers[0].moe.register_buffer(
+        "expert_bias", torch.tensor([0.25], dtype=torch.float32)
+    )
+    spec = K3WeightSpec(_ExpertConfig())
+    summary = save_hf_weights(
+        source,
+        tmp_path,
+        _ExpertConfig(),
+        target=target,
+        max_shard_size_bytes=64,
+    )
+
+    index_path = tmp_path / "model.safetensors.index.json"
+    index = json.loads(index_path.read_text())
+    assert summary.shards > 1
+    assert index["metadata"]["format"] == target
+    assert index["metadata"]["total_size"] > 0
+    assert not list(tmp_path.glob("*.tmp"))
+    assert all(
+        (tmp_path / filename).is_file()
+        for filename in set(index["weight_map"].values())
+    )
+    if target == "mxfp4":
+        for key, filename in index["weight_map"].items():
+            if key.endswith("_packed"):
+                assert (
+                    index["weight_map"][key.removesuffix("_packed") + "_scale"]
+                    == filename
+                )
+
+    restored = _TinyExpertModel()
+    restored.layers[0].moe.register_buffer(
+        "expert_bias", torch.zeros(1, dtype=torch.float32)
+    )
+    reader = SafeTensorReader(str(tmp_path))
+    assert load_weights_from_reader(restored, reader, spec) == len(
+        restored.state_dict()
+    )
+    assert torch.equal(
+        restored.layers[0].moe.expert_bias, source.layers[0].moe.expert_bias
+    )
+    if target == "bf16":
+        for actual, expected in zip(
+            restored.state_dict().values(), source.state_dict().values(), strict=True
+        ):
+            assert torch.equal(actual, expected)
 
 
 def test_qat_parametrized_checkpoint_load_and_export_use_logical_weight_names():
