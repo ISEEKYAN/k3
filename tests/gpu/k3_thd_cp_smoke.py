@@ -18,23 +18,29 @@ def _expected_local_tokens(
     full_tokens: torch.Tensor,
     lengths: list[int],
     *,
+    tp_size: int,
     cp_rank: int,
     cp_size: int,
 ) -> torch.Tensor:
     """Independently calculate the per-sequence zigzag shard for one CP rank."""
     pieces = []
     offset = 0
+    alignment = tp_size * (2 * cp_size if cp_size > 1 else 1)
     for length in lengths:
-        if length % (2 * cp_size):
-            raise ValueError(
-                f"sequence length {length} must be divisible by 2 * cp_size={2 * cp_size}"
-            )
         row = full_tokens[offset : offset + length]
         offset += length
+        padded_length = ((length + alignment - 1) // alignment) * alignment
+        if padded_length > length:
+            row = torch.cat(
+                (
+                    row,
+                    row.new_zeros(padded_length - length),
+                )
+            )
         if cp_size == 1:
             pieces.append(row)
             continue
-        chunks = row.view(2 * cp_size, length // (2 * cp_size))
+        chunks = row.view(2 * cp_size, padded_length // (2 * cp_size))
         pieces.extend((chunks[cp_rank], chunks[2 * cp_size - cp_rank - 1]))
     if offset != full_tokens.numel():
         raise ValueError(
@@ -111,7 +117,7 @@ def main() -> None:
 
     lengths = [16, 24]
     total_tokens = sum(lengths)
-    input_ids = torch.arange(total_tokens, device=device, dtype=torch.long) % 256
+    input_ids = torch.arange(1, total_tokens + 1, device=device, dtype=torch.long) % 256
     batch = PackedBatch(
         input_ids=input_ids,
         labels=input_ids.roll(-1),
@@ -138,7 +144,11 @@ def main() -> None:
     model_hook.remove()
     layer_hook.remove()
 
-    expected_cp_tokens = total_tokens // bundle.parallel_state.cp_size
+    alignment = tp_size * (2 * cp_size if cp_size > 1 else 1)
+    padded_tokens = sum(
+        ((length + alignment - 1) // alignment) * alignment for length in lengths
+    )
+    expected_cp_tokens = padded_tokens // bundle.parallel_state.cp_size
     expected_layer_sequence = expected_cp_tokens // bundle.parallel_state.tp_size
     if observed != {
         "protocol_local_tokens": expected_cp_tokens,
@@ -156,6 +166,7 @@ def main() -> None:
     expected_input_ids = _expected_local_tokens(
         input_ids,
         lengths,
+        tp_size=tp_size,
         cp_rank=bundle.parallel_state.cp_rank,
         cp_size=bundle.parallel_state.cp_size,
     )
@@ -176,8 +187,9 @@ def main() -> None:
             group=bundle.parallel_state.cp_group,
         )
         gathered_tokens = torch.cat(cp_parts)
+    gathered_real_tokens = gathered_tokens[gathered_tokens != 0]
     if not torch.equal(
-        torch.sort(gathered_tokens).values,
+        torch.sort(gathered_real_tokens).values,
         torch.sort(input_ids).values,
     ):
         raise AssertionError(
