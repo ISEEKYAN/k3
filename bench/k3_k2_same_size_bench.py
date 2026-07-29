@@ -263,6 +263,62 @@ def memory_snapshot(device: torch.device) -> dict[str, int]:
     }
 
 
+def profile_step(
+    name: str,
+    model: torch.nn.Module,
+    batch,
+    spec: ProxySpec,
+    ps,
+    device: torch.device,
+) -> None:
+    """Emit raw Kineto events for a separate, explicitly enabled diagnosis run."""
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ],
+        record_shapes=False,
+        profile_memory=False,
+        with_stack=False,
+    ) as profiler:
+        model.zero_grad(set_to_none=True)
+        dist.barrier()
+        torch.cuda.synchronize()
+        forward_backward(model, batch, spec, ps)
+        torch.cuda.synchronize()
+
+    local_events = [
+        {
+            "key": event.key,
+            "count": event.count,
+            "cpu_time_total_us": event.cpu_time_total,
+            "device_time_total_us": event.device_time_total,
+            "self_device_time_total_us": event.self_device_time_total,
+        }
+        for event in profiler.key_averages()
+        if event.device_time_total > 0
+    ]
+    local_events.sort(
+        key=lambda event: event["device_time_total_us"],
+        reverse=True,
+    )
+    gathered: list[list[dict] | None] = [None for _ in range(dist.get_world_size())]
+    dist.all_gather_object(gathered, local_events[:200])
+    if dist.get_rank() == 0:
+        print(
+            "PROFILE_RAW="
+            + json.dumps(
+                {
+                    "name": name,
+                    "rank_events": gathered,
+                    "units": "microseconds",
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
+
 def benchmark(
     name: str,
     spec: ProxySpec,
@@ -322,6 +378,9 @@ def benchmark(
 
     for _ in range(spec.warmup_steps):
         step(measure_memory=False)
+
+    if os.environ.get("K3_PROFILE") == "1":
+        profile_step(name, model, batch, spec, ps, device)
 
     elapsed: list[float] = []
     train_peaks: list[int] = []
