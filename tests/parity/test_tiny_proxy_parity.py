@@ -352,8 +352,8 @@ def test_tiny_hybrid_proxy_matches_independent_layerwise_reference():
     actual = bundle.chunks[0]
     assert not torch.equal(actual.embed_tokens.weight, reference.embed_tokens.weight)
     loaded = load_weights_from_reader(actual, reader, spec)
-    assert reference_loaded == len(dict(reference.named_parameters()))
-    assert loaded == len(dict(actual.named_parameters()))
+    assert reference_loaded == len(reference.state_dict())
+    assert loaded == len(actual.state_dict())
     input_ids = torch.tensor([[1, 2, 3, 4], [4, 3, 2, 1]])
     labels = torch.tensor([[2, 3, 4, 5], [3, 2, 1, 0]])
 

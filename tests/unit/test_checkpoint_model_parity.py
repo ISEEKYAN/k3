@@ -267,12 +267,17 @@ def _official_layer_reference(
     return prefix_sum + mlp_output, block_residual
 
 
-def test_real_tiny_model_parameters_have_complete_public_weight_mapping():
+def test_real_tiny_model_tensors_have_complete_public_weight_mapping():
     config = _tiny_quantized_config()
     model = K3Model(config)
     mapping = K3WeightSpec(config).weight_map()
 
-    assert set(dict(model.named_parameters())) == set(mapping)
+    assert set(dict(model.named_parameters())) | set(
+        dict(model.named_buffers())
+    ) == set(mapping)
+    assert "layers.1.moe.expert_bias" not in dict(model.named_parameters())
+    assert "layers.1.moe.expert_bias" in dict(model.named_buffers())
+    assert "layers.1.moe.expert_bias" in model.state_dict()
     assert not any(name.endswith(".conv.bias") for name, _ in model.named_parameters())
 
 
@@ -292,19 +297,17 @@ def test_mxfp4_loaded_tiny_model_matches_independent_layer_reference():
     assert audit_k3_weight_spec_sources(spec, reader.index) == len(
         {name for names in spec.weight_map().values() for name in names}
     )
-    assert load_weights_from_reader(target, reader, spec) == len(
-        dict(target.named_parameters())
-    )
+    assert load_weights_from_reader(target, reader, spec) == len(target.state_dict())
     plain_hf = dict(iter_hf_weights(target, spec))
     assert all(tensor.dtype == torch.bfloat16 for tensor in plain_hf.values())
     reloaded = K3Model(config)
     assert audit_k3_weight_spec_sources(spec, plain_hf) == len(plain_hf)
     assert load_weights_from_reader(reloaded, _Reader(plain_hf), spec) == len(
-        dict(reloaded.named_parameters())
+        reloaded.state_dict()
     )
     for (target_name, target_parameter), (reloaded_name, reloaded_parameter) in zip(
-        target.named_parameters(),
-        reloaded.named_parameters(),
+        target.state_dict().items(),
+        reloaded.state_dict().items(),
         strict=True,
     ):
         assert target_name == reloaded_name
