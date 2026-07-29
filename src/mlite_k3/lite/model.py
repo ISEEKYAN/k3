@@ -23,6 +23,10 @@ from megatron.lite.primitive.parallel import (
 from megatron.lite.primitive.parallel.cp import zigzag_slice_for_cp
 
 from mlite_k3.config import K3Config
+from mlite_k3.lite.pipeline_layout import (
+    _attn_res_decoder_layer_groups,
+    validate_attn_res_pipeline_split,
+)
 from mlite_k3.lite.pipeline_state import (
     _pack_pipeline_state,
     _unpack_pipeline_state,
@@ -304,10 +308,19 @@ class K3ParallelModel(nn.Module):
         self.ps = ps
         self.rms_norm_eps = config.rms_norm_eps
         self._input_tensor: torch.Tensor | None = None
-        layout = build_pipeline_chunk_layout(config.num_hidden_layers, ps)
+        layout = build_pipeline_chunk_layout(
+            config.num_hidden_layers,
+            ps,
+            decoder_layer_groups=_attn_res_decoder_layer_groups(config),
+        )
         self.layer_indices = layout.layer_indices
         self.pre_process = layout.has_embed
         self.post_process = layout.has_head
+        validate_attn_res_pipeline_split(
+            self.layer_indices,
+            num_hidden_layers=config.num_hidden_layers,
+            block_size=config.attn_res_block_size,
+        )
         self.embed_tokens: VocabParallelEmbedding | None = None
         if self.pre_process:
             self.embed_tokens = VocabParallelEmbedding(

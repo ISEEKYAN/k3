@@ -148,6 +148,67 @@ These checks require no CUDA. The verified checkpoint and numerical scope is
 the reduced checkpoint proxy and independent functional proxy below; GPU and
 distributed claims require their own non-skipped tests.
 
+## Attention Residual-aware pipeline layout
+
+`K3ParallelModel` uses Megatron Lite's
+`build_pipeline_chunk_layout(..., decoder_layer_groups=...)` primitive. It
+turns each configured Attention Residual block into an indivisible decoder
+group and validates the resulting local stage before constructing layers.
+Custom layouts that split a group, and PP sizes that leave a decoder-empty
+stage, fail during model construction.
+
+The public 93-layer configuration uses `attn_res_block_size=12`, so its groups
+are `0..11`, `12..23`, ..., `72..83`, and the final `84..92`. Automatic PP8
+therefore assigns `[12, 12, 12, 12, 12, 12, 12, 9]` decoder layers. The first
+stage also owns the embedding and the shorter final stage owns the final
+Attention Residual projection, norm, and language-model head. There are only
+eight indivisible groups, so this contract deliberately rejects PP greater
+than 8 instead of silently adding a cross-stage Attention Residual dependency.
+
+No separate P2P call is added for Attention Residuals. The existing pipeline
+activation packs the normal hidden state together with the cumulative residual
+snapshots. After aligned blocks, the seven PP8 boundaries carry 1 through 7
+snapshots. For sequence-local token count `T`, hidden size `H`, element size
+`D`, and boundary snapshot count `K`, the forward payload is
+`T * H * D * (1 + K)` bytes; the backward gradient has the same shape. With
+K3's `H=7168` and BF16, that is 14 KiB per local token for each hidden-sized
+component, or 28 through 112 KiB total per token at the seven boundaries.
+Residual blending computes its score in FP32 and converts back to the
+activation dtype; pipeline transport is BF16 when activations are BF16, not
+unconditionally FP32.
+
+For comparison, bypassing the group contract and asking the same MLite
+primitive for PP9 would produce decoder counts
+`[10, 11, 11, 11, 11, 10, 10, 10, 9]`. Its boundary snapshot counts are
+`[1, 2, 3, 4, 5, 6, 7, 7]`: 43 hidden-sized components across the forward
+chain versus 35 for aligned PP8, a 22.9% increase (112 KiB per local BF16
+token), with the same increase for backward gradients. The residual stream
+still adds zero distinct P2P calls, but PP9 itself adds one pipeline boundary
+and therefore one normal send/receive in each direction per microbatch. K3
+rejects this counterfactual layout because it splits Attention Residual groups.
+
+Construct the model normally; the grouped layout is automatic:
+
+```python
+from megatron.lite.primitive.parallel import ParallelState
+from mlite_k3.config import K3Config
+from mlite_k3.lite.model import K3ParallelModel
+
+rank = 7
+parallel = ParallelState(
+    tp_size=1,
+    cp_size=8,
+    dp_size=8,
+    ep_size=32,
+    pp_size=8,
+    pp_rank=rank,
+    pp_is_first=rank == 0,
+    pp_is_last=rank == 7,
+)
+model = K3ParallelModel(K3Config(), parallel)
+assert model.layer_indices == list(range(84, 93))
+```
+
 ## Tutorial 5: save a public HF checkpoint
 
 `save_hf_weights` streams tensors into bounded safetensors shards.  It publishes
