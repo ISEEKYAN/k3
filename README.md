@@ -172,6 +172,24 @@ tensor bytes, and the chosen export format.  MXFP4 `_packed` and `_scale` keys
 are always co-located in a shard; persistent router `expert_bias` remains a
 plain public tensor.
 
+## Tutorial 6: validate the pinned complete checkpoint
+
+The validator accepts only the frozen `moonshotai/Kimi-K3` release at revision
+`9f62e4e9fffbd0a83ddd60e1c209d828994b3569`. It checks the pinned config and
+index hashes, then streams every mapped logical tensor through the public-to-
+native-to-public layout transforms. Shape, dtype, and raw tensor bytes must all
+match; signed zero and NaN payload differences are failures.
+
+```bash
+k3-validate-checkpoint /shared/Kimi-K3 \
+  --output ./k3-checkpoint-validation.json
+```
+
+The JSON file is atomically published only after every tensor passes. It also
+contains the reproducible 93-layer/896-expert structural sample and the
+structure-by-capability coverage matrix. A missing shard, wrong release, or
+single tensor mismatch exits nonzero without publishing a new report.
+
 ## R3 replay and MXFP4 QAT contracts
 
 The K3 protocol exports Megatron Lite's standard zigzag-THD replay helpers:
