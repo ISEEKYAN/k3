@@ -32,6 +32,8 @@ def validate_thd_inputs(
     labels: torch.Tensor | None,
     loss_mask: torch.Tensor | None,
     packed_seq_params: Any,
+    *,
+    cp_size: int = 1,
 ) -> None:
     """Fail loud on malformed K3 THD inputs at the model boundary."""
     if input_ids.ndim != 2 or input_ids.shape[0] != 1:
@@ -56,6 +58,16 @@ def validate_thd_inputs(
         raise ValueError("K3 THD cu_seqlens must start at 0")
     if not bool(torch.all(cu_q[1:] >= cu_q[:-1]).item()):
         raise ValueError("K3 THD cu_seqlens must be nondecreasing")
+    if cp_size < 1:
+        raise ValueError("K3 THD cp_size must be positive")
+    if cp_size > 1:
+        cp_alignment = 2 * cp_size
+        sequence_lengths = cu_q[1:] - cu_q[:-1]
+        if bool(torch.any(sequence_lengths % cp_alignment != 0).item()):
+            raise ValueError(
+                "K3 THD padded sequence lengths must be divisible by "
+                f"2 * cp_size={cp_alignment}"
+            )
     total_tokens = getattr(packed_seq_params, "total_tokens", None)
     if total_tokens is None:
         raise ValueError("K3 THD total_tokens must be explicitly set")

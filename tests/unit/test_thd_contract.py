@@ -115,6 +115,21 @@ def test_thd_contract_requires_identical_q_and_kv_cu_seqlens():
         validate_thd_inputs(torch.arange(8).view(1, 8), None, None, packed)
 
 
+def test_thd_contract_rejects_sequence_lengths_that_cannot_be_zigzag_split():
+    packed = _packed()
+    packed.cu_seqlens_q = torch.tensor([0, 5, 8], dtype=torch.int32)
+    packed.cu_seqlens_kv = packed.cu_seqlens_q.clone()
+
+    with pytest.raises(ValueError, match=r"divisible by 2 \* cp_size=4"):
+        validate_thd_inputs(
+            torch.arange(8).view(1, 8),
+            None,
+            None,
+            packed,
+            cp_size=2,
+        )
+
+
 def _expected_zigzag_tokens(
     full_tokens: torch.Tensor,
     lengths: list[int],

@@ -400,6 +400,7 @@ class K3ParallelModel(nn.Module):
                     labels,
                     loss_mask,
                     packed_seq_params,
+                    cp_size=self.ps.cp_size,
                 )
             assert self.embed_tokens is not None
             hidden_states = self.embed_tokens(input_ids)
