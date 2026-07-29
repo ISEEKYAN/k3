@@ -179,6 +179,16 @@ The K3 protocol exports Megatron Lite's standard zigzag-THD replay helpers:
 `unpack_thd_forward_output`. The caller owns replay-mask semantics; K3 only
 converts routes and the caller-provided mask through the same THD/CP/TP layout.
 
+For packed THD with context parallelism, pass the runtime `PackedBatch` to the
+bundle's `forward_step`. The shared protocol performs the packing-aware CP split
+once and marks `packed_seq_params.local_cp_size`; the model consumes that local
+layout without slicing hidden states, labels, or the loss mask again. A reduced
+TP2/EP2/CP2 forward/backward example is executable with:
+
+```bash
+torchrun --standalone --nproc-per-node=8 tests/gpu/k3_thd_cp_smoke.py
+```
+
 Weight-only MXFP4 fake quantization is an explicit model-build option:
 
 ```python
@@ -252,13 +262,10 @@ The first release is limited to the readable reference implementation and
 reduced-layer, reduced-expert tiny-config proxy parity. Proxy parity remains
 not done until its independent, non-skipped evidence is published.
 
-Expert parallelism, context parallelism, THD sequences, pipeline parallelism,
-and short training are deferred and not done. They do not depend on a K3
-primitive change in Megatron Lite. Their unlock path is to implement and
-validate K3-owned sharding, parameter placement, state transfer, and
-communication primitives in this repository, then exercise them through
-scheduler-backed tests. No distributed or training claim is implied by the CPU
-reference path.
+Reduced distributed proxies cover expert parallelism, context parallelism,
+packed THD sequences, and pipeline parallelism in `tests/gpu`. Full-scale
+checkpoint training remains deferred; no full-scale distributed or training
+claim is implied by the CPU reference path or the reduced GPU proxies.
 
 ## Use this repository as a template
 

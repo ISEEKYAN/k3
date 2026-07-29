@@ -174,13 +174,12 @@ and assert the requested topology and communication path. The minimum matrix is:
 If a proxy topology is used, report it as proxy evidence. It must not be
 described as a full-scale Kimi K3 run.
 
-For the first release, every Stage 4 item is deferred and not-done: one-rank
-GPU parity, short training, EP, CP, packed THD, combined CP+EP, and PP. The
-unlock path is to extend the K3-owned primitive layer with tensor/expert/context
-sharding, packed-sequence state transfer, checkpoint placement, and pipeline
-ownership, followed by scheduler-backed forward/backward topology tests.
-FlashKDA direct dispatch is also not-done; the approved training path is FLA
-`chunk_kda`.
+Reduced scheduler-backed proxies now cover one-rank parity, EP, CP, packed THD,
+combined CP+EP, and PP. The packed-THD CP proxy enters through the public
+`PackedBatch` protocol and asserts that packing-aware CP partitioning happens
+exactly once before completing forward and backward. Full-scale checkpoint
+training and a short optimizer-backed train remain deferred. FlashKDA direct
+dispatch is also not done; the approved training path is FLA `chunk_kda`.
 
 ## Evidence and publication rules
 

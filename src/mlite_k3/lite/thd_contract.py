@@ -7,6 +7,21 @@ from typing import Any
 import torch
 
 
+def thd_requires_context_parallel_slice(
+    packed_seq_params: Any,
+    *,
+    cp_size: int,
+) -> bool:
+    """Return whether a full THD row still needs its model-boundary CP slice."""
+    local_cp_size = int(getattr(packed_seq_params, "local_cp_size", None) or 1)
+    if local_cp_size > 1 and local_cp_size != cp_size:
+        raise ValueError(
+            "K3 THD local_cp_size="
+            f"{local_cp_size} does not match model cp_size={cp_size}"
+        )
+    return cp_size > 1 and local_cp_size == 1
+
+
 def validate_thd_inputs(
     input_ids: torch.Tensor,
     labels: torch.Tensor | None,
@@ -33,4 +48,4 @@ def validate_thd_inputs(
         raise ValueError("K3 THD total_tokens must match input_ids.shape[1]")
 
 
-__all__ = ["validate_thd_inputs"]
+__all__ = ["thd_requires_context_parallel_slice", "validate_thd_inputs"]

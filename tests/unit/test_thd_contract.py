@@ -5,7 +5,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from mlite_k3.lite.thd_contract import validate_thd_inputs
+from mlite_k3.lite.thd_contract import (
+    thd_requires_context_parallel_slice,
+    validate_thd_inputs,
+)
 
 
 def _packed(total_tokens: int = 8):
@@ -40,3 +43,24 @@ def test_thd_contract_requires_matching_labels_and_explicit_total():
         )
     with pytest.raises(ValueError, match="total_tokens"):
         validate_thd_inputs(tokens, None, None, _packed(total_tokens=7))
+
+
+def test_plain_thd_requires_exactly_one_model_context_parallel_slice():
+    packed = _packed()
+
+    assert thd_requires_context_parallel_slice(packed, cp_size=2)
+
+
+def test_protocol_local_thd_must_not_be_split_again():
+    packed = _packed()
+    packed.local_cp_size = 2
+
+    assert not thd_requires_context_parallel_slice(packed, cp_size=2)
+
+
+def test_thd_rejects_local_context_parallel_metadata_for_another_topology():
+    packed = _packed()
+    packed.local_cp_size = 4
+
+    with pytest.raises(ValueError, match="local_cp_size=4.*cp_size=2"):
+        thd_requires_context_parallel_slice(packed, cp_size=2)
