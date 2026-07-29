@@ -24,6 +24,10 @@ _ROUTED_MXFP4_KEY = re.compile(
     r"^language_model\.model\.layers\.\d+\.block_sparse_moe\.experts\.\d+"
     r"\.w[123]\.weight_(packed|scale)$"
 )
+_ROUTED_MXFP4_WEIGHT = re.compile(
+    r"^language_model\.model\.layers\.\d+\.block_sparse_moe\.experts\.\d+"
+    r"\.w[123]\.weight$"
+)
 
 
 @dataclass(frozen=True)
@@ -157,6 +161,9 @@ class K3WeightSpec:
             mapping[f"{native}.moe.{native_suffix}"] = [
                 f"{prefix}.{suffix}" for suffix in hf_suffixes
             ]
+        mapping[f"{native}.moe.router.expert_bias"] = mapping[
+            f"{native}.moe.expert_bias"
+        ]
         for expert in range(self.config.num_experts):
             expert_prefix = f"{prefix}.experts.{expert}"
             mapping[f"{native}.moe.experts.{expert}.gate_up.weight"] = [
@@ -365,8 +372,16 @@ def _named_checkpoint_tensors(model: torch.nn.Module):
     persistent = set(model.state_dict())
     yield from model.named_parameters()
     yield from (
-        (name, buffer) for name, buffer in model.named_buffers() if name in persistent
+        (name, buffer)
+        for name, buffer in model.named_buffers()
+        if name in persistent and ".parametrizations." not in name
     )
+
+
+def _canonical_state_key(name: str) -> str:
+    from megatron.lite.primitive.quantization.qat import canonical_state_key
+
+    return canonical_state_key(name)
 
 
 def load_weights_from_reader(
@@ -379,7 +394,8 @@ def load_weights_from_reader(
     mapping = spec.weight_map()
     loaded = 0
     with torch.no_grad():
-        for native_name, parameter in _named_checkpoint_tensors(base):
+        for state_name, parameter in _named_checkpoint_tensors(base):
+            native_name = _canonical_state_key(state_name)
             hf_names = mapping.get(native_name)
             if hf_names is None:
                 raise KeyError(
@@ -401,17 +417,30 @@ def load_weights_from_reader(
 def iter_hf_weights(
     model: torch.nn.Module,
     spec: K3WeightSpec,
+    *,
+    target: str = "bf16",
 ):
-    """Yield plain BF16 HF tensors one native tensor at a time."""
+    """Yield BF16 or public MXFP4 HF tensors one native tensor at a time."""
+    if target not in ("bf16", "mxfp4"):
+        raise ValueError("target must be 'bf16' or 'mxfp4'")
     base = _unwrap_model(model)
     mapping = spec.weight_map()
-    for native_name, parameter in _named_checkpoint_tensors(base):
+    for state_name, parameter in _named_checkpoint_tensors(base):
+        native_name = _canonical_state_key(state_name)
         if native_name not in mapping:
             raise KeyError(
                 f"native tensor {native_name!r} has no K3 checkpoint mapping"
             )
         tensor = parameter.detach().to(device="cpu", dtype=torch.bfloat16)
-        yield from spec.native_to_hf(native_name, tensor)
+        for hf_name, hf_tensor in spec.native_to_hf(native_name, tensor):
+            if target == "bf16" or not _ROUTED_MXFP4_WEIGHT.fullmatch(hf_name):
+                yield hf_name, hf_tensor
+                continue
+            from megatron.lite.primitive.quantization.mxfp4 import quantize_mxfp4
+
+            packed, scale = quantize_mxfp4(hf_tensor)
+            yield f"{hf_name}_packed", packed
+            yield f"{hf_name}_scale", scale.view(torch.uint8)
 
 
 def load_hf_weights(

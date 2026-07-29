@@ -148,6 +148,39 @@ These checks require no CUDA. The verified checkpoint and numerical scope is
 the reduced checkpoint proxy and independent functional proxy below; GPU and
 distributed claims require their own non-skipped tests.
 
+## R3 replay and MXFP4 QAT contracts
+
+The K3 protocol exports Megatron Lite's standard zigzag-THD replay helpers:
+`router_replay_roots`, `pack_routed_experts`, `pack_r3_replay_mask`, and
+`unpack_thd_forward_output`. The caller owns replay-mask semantics; K3 only
+converts routes and the caller-provided mask through the same THD/CP/TP layout.
+
+Weight-only MXFP4 fake quantization is an explicit model-build option:
+
+```python
+bundle = build_model(
+    config,
+    impl_cfg=ImplConfig(
+        device="cpu",
+        dtype="bfloat16",
+        qat={"enabled": True, "format": "mxfp4"},
+    ),
+)
+print(bundle.extras["qat"])
+```
+
+K3 narrows the generic QAT target to the public checkpoint contract: only
+routed-expert linear weights are parametrized. Attention, shared experts,
+dense MLPs, embeddings, residual projections, routers, and the language-model
+head remain unquantized. Checkpoint load and BF16 export resolve QAT
+`parametrizations.weight.original` names back to their logical public names.
+For rollout resynchronization, `iter_hf_weights(model, spec, target="mxfp4")`
+emits `_packed`/`_scale` pairs only for routed-expert `w1`, `w2`, and `w3`.
+
+This is a QAT graph/checkpoint/export contract. K3 still rejects a non-null
+`ImplConfig.optimizer`, so it does not claim an optimizer-backed QAT training
+loop.
+
 ## Verified first-release checkpoint proxy
 
 The single-rank CPU proxy retains one KDA layer, one gated-MLA layer,

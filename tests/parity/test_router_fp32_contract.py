@@ -86,11 +86,14 @@ def _dense_outputs(
 
 
 def _reference_outputs(
-    x: torch.Tensor, weight: torch.Tensor, topk: int
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    expert_bias: torch.Tensor,
+    topk: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     logits = F.linear(x.float(), weight.float())
     scores = torch.sigmoid(logits)
-    selected = torch.topk(scores, topk, dim=-1).indices
+    selected = torch.topk(scores + expert_bias.float(), topk, dim=-1).indices
     selected = selected.sort(dim=-1).values
     probabilities = scores.gather(1, selected)
     probabilities = probabilities / probabilities.sum(dim=-1, keepdim=True)
@@ -106,6 +109,16 @@ def test_k3_declares_and_matches_fp32_shared_router_contract(monkeypatch):
     assert isinstance(router_dtype, ast.Attribute)
     assert isinstance(router_dtype.value, ast.Name)
     assert (router_dtype.value.id, router_dtype.attr) == ("torch", "float32")
+    expert_bias_persistent = next(
+        (
+            keyword.value
+            for keyword in call.keywords
+            if keyword.arg == "expert_bias_persistent"
+        ),
+        None,
+    )
+    assert isinstance(expert_bias_persistent, ast.Constant)
+    assert expert_bias_persistent.value is True
 
     _install_transformer_engine_import_stub(monkeypatch)
     from megatron.lite.primitive.modules.router import SigmoidTopKRouter
@@ -131,10 +144,14 @@ def test_k3_declares_and_matches_fp32_shared_router_contract(monkeypatch):
         parallel_state,
         compute_aux_loss=False,
         router_dtype=torch.float32,
+        expert_bias_persistent=True,
     ).to(torch.bfloat16)
+    expert_bias = torch.linspace(-0.2, 0.2, config.n_routed_experts)
     with torch.no_grad():
         default_router.gate.weight.copy_(weight)
         fp32_router.gate.weight.copy_(weight)
+        default_router.expert_bias.copy_(expert_bias)
+        fp32_router.expert_bias.copy_(expert_bias)
 
     default_scores, default_indices = default_router(hidden)
     actual_scores, actual_indices = fp32_router(hidden)
@@ -148,8 +165,12 @@ def test_k3_declares_and_matches_fp32_shared_router_contract(monkeypatch):
         actual_scores, actual_indices, config.n_routed_experts
     )
     reference_probs, reference_map = _reference_outputs(
-        hidden, weight, config.num_experts_per_tok
+        hidden,
+        weight,
+        expert_bias,
+        config.num_experts_per_tok,
     )
+    assert "expert_bias" in fp32_router.state_dict()
     metrics = {
         "default_probs_max_abs": (default_probs.float() - reference_probs)
         .abs()

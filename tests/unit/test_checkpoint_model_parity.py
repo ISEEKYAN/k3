@@ -272,9 +272,11 @@ def test_real_tiny_model_tensors_have_complete_public_weight_mapping():
     model = K3Model(config)
     mapping = K3WeightSpec(config).weight_map()
 
-    assert set(dict(model.named_parameters())) | set(
-        dict(model.named_buffers())
-    ) == set(mapping)
+    production_bias = "layers.1.moe.router.expert_bias"
+    assert set(dict(model.named_parameters())) | set(dict(model.named_buffers())) == (
+        set(mapping) - {production_bias}
+    )
+    assert mapping[production_bias] == mapping["layers.1.moe.expert_bias"]
     assert "layers.1.moe.expert_bias" not in dict(model.named_parameters())
     assert "layers.1.moe.expert_bias" in dict(model.named_buffers())
     assert "layers.1.moe.expert_bias" in model.state_dict()

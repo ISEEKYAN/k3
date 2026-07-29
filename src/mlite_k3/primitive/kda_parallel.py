@@ -2,17 +2,181 @@
 
 from __future__ import annotations
 
-import torch
+from collections.abc import Callable
 
-from megatron.lite.primitive.modules.gated_delta_net import (
-    FullRankGatedDeltaNet,
-    GatedDeltaNet,
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import transformer_engine.pytorch as te
+
+from megatron.lite.primitive.modules.gated_delta_net import GatedDeltaNet
+from megatron.lite.primitive.parallel import (
+    ColumnParallelLinear,
+    ParallelState,
+    RowParallelLinear,
 )
 from megatron.lite.primitive.parallel.cp import get_parameter_local_cp_headwise
 from megatron.lite.primitive.utils import ensure_divisible
 
+try:
+    from fla.modules.convolution import (
+        causal_conv1d as _fla_causal_conv1d,  # pyright: ignore[reportMissingImports]
+    )
 
-class K3FullRankGatedDeltaNet(FullRankGatedDeltaNet):
+    _HAS_FLA = True
+except ImportError:
+    _HAS_FLA = False
+
+
+class _K3FullRankDeltaNet(nn.Module):
+    """K3-owned full-rank projections around the shared GDN parallel helpers."""
+
+    def __init__(
+        self,
+        *,
+        hidden_size: int,
+        num_heads: int,
+        head_dim: int,
+        conv_kernel_size: int,
+        rms_norm_eps: float,
+        gate_lower_bound: float,
+        ps: ParallelState,
+        recurrence: Callable,
+        deterministic: bool = False,
+    ):
+        super().__init__()
+        self.ps = ps
+        self.num_heads = num_heads
+        self.num_heads_local = ensure_divisible(num_heads, ps.tp_size)
+        self.head_dim = head_dim
+        self.projection_size = num_heads * head_dim
+        self.projection_size_local = self.num_heads_local * head_dim
+        self.gate_lower_bound = float(gate_lower_bound)
+        self.recurrence = recurrence
+        self.deterministic = bool(deterministic)
+
+        def column(in_features: int, out_features: int) -> ColumnParallelLinear:
+            return ColumnParallelLinear(in_features, out_features, ps, bias=False)
+
+        self.q_proj = column(hidden_size, self.projection_size)
+        self.k_proj = column(hidden_size, self.projection_size)
+        self.v_proj = column(hidden_size, self.projection_size)
+        self.q_conv1d = nn.Conv1d(
+            self.projection_size_local,
+            self.projection_size_local,
+            conv_kernel_size,
+            groups=self.projection_size_local,
+            bias=False,
+            padding=conv_kernel_size - 1,
+        )
+        self.k_conv1d = nn.Conv1d(
+            self.projection_size_local,
+            self.projection_size_local,
+            conv_kernel_size,
+            groups=self.projection_size_local,
+            bias=False,
+            padding=conv_kernel_size - 1,
+        )
+        self.v_conv1d = nn.Conv1d(
+            self.projection_size_local,
+            self.projection_size_local,
+            conv_kernel_size,
+            groups=self.projection_size_local,
+            bias=False,
+            padding=conv_kernel_size - 1,
+        )
+        self.A_log = nn.Parameter(
+            torch.zeros(self.num_heads_local, dtype=torch.float32)
+        )
+        self.dt_bias = nn.Parameter(
+            torch.zeros(self.num_heads_local, head_dim, dtype=torch.float32)
+        )
+        self.f_a_proj = nn.Linear(hidden_size, head_dim, bias=False)
+        self.f_b_proj = column(head_dim, self.projection_size)
+        self.b_proj = column(hidden_size, num_heads)
+        self.g_proj = column(hidden_size, self.projection_size)
+        self.o_norm = te.RMSNorm(head_dim, eps=rms_norm_eps)
+        self.o_proj = RowParallelLinear(
+            self.projection_size, hidden_size, ps, bias=False
+        )
+
+    def _conv(
+        self,
+        qkv: torch.Tensor,
+        *,
+        cu_seqlens: torch.Tensor | None,
+    ) -> torch.Tensor:
+        seq_len = qkv.shape[1]
+        weight = torch.cat(
+            (self.q_conv1d.weight, self.k_conv1d.weight, self.v_conv1d.weight),
+            dim=0,
+        )
+        if _HAS_FLA and (cu_seqlens is not None or not self.deterministic):
+            qkv, _ = _fla_causal_conv1d(
+                x=qkv,
+                weight=weight.squeeze(1),
+                bias=None,
+                activation="silu",
+                cu_seqlens=cu_seqlens,
+            )
+            return qkv
+        if cu_seqlens is not None:
+            raise NotImplementedError("Packed THD K3 convolution requires FLA.")
+        output = F.conv1d(
+            qkv.transpose(1, 2),
+            weight=weight,
+            bias=None,
+            padding=self.q_conv1d.padding[0],
+            groups=weight.shape[0],
+        )
+        return F.silu(output[:, :, :seq_len].transpose(1, 2))
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        position_ids: torch.Tensor | None = None,
+        packed_seq_params=None,
+    ) -> torch.Tensor:
+        del position_ids
+        q = self.q_proj(x).transpose(0, 1).contiguous()
+        k = self.k_proj(x).transpose(0, 1).contiguous()
+        v = self.v_proj(x).transpose(0, 1).contiguous()
+        cu_seqlens = (
+            GatedDeltaNet._packed_cu_seqlens(packed_seq_params)
+            if packed_seq_params is not None
+            else None
+        )
+        q, k, v = self._conv(
+            torch.cat((q, k, v), dim=-1),
+            cu_seqlens=cu_seqlens,
+        ).split(self.projection_size_local, dim=-1)
+        shape = (*q.shape[:-1], self.num_heads_local, self.head_dim)
+        q, k, v = q.view(shape), k.view(shape), v.view(shape)
+        feature_gate = (
+            self.f_b_proj(self.f_a_proj(x)).transpose(0, 1).contiguous().view(shape)
+        )
+        beta = self.b_proj(x).transpose(0, 1).contiguous().view(*q.shape[:-1])
+        output, _ = self.recurrence(
+            q,
+            k,
+            v,
+            feature_gate,
+            beta,
+            a_log=self.A_log,
+            dt_bias=self.dt_bias,
+            lower_bound=self.gate_lower_bound,
+            output_final_state=False,
+            scale=self.head_dim**-0.5,
+            cu_seqlens=cu_seqlens,
+            backend="auto",
+        )
+        gate = self.g_proj(x).transpose(0, 1).contiguous().view_as(output).sigmoid()
+        output = self.o_norm(output) * gate
+        output = output.flatten(-2).transpose(0, 1).contiguous()
+        return self.o_proj(output)
+
+
+class K3FullRankGatedDeltaNet(_K3FullRankDeltaNet):
     """Connect K3's full-rank KDA math to the shared headwise CP skeleton."""
 
     def __init__(self, *args, cp_mode: str = "headwise", **kwargs):

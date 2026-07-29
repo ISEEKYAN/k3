@@ -340,6 +340,10 @@ def test_tiny_hybrid_proxy_matches_independent_layerwise_reference():
     hf_weights = {
         name: tensor.clone() for name, tensor in iter_hf_weights(reference, spec)
     }
+    bias_name = (
+        "language_model.model.layers.1.block_sparse_moe.gate.e_score_correction_bias"
+    )
+    hf_weights[bias_name] = torch.tensor([-0.3, -0.1, 0.1, 0.3])
     reader, quantized = _quantized_release_reader(hf_weights)
     assert quantized == config.num_experts * 3
     assert audit_k3_weight_spec_sources(spec, reader.index) == len(hf_weights)
@@ -354,6 +358,12 @@ def test_tiny_hybrid_proxy_matches_independent_layerwise_reference():
     loaded = load_weights_from_reader(actual, reader, spec)
     assert reference_loaded == len(reference.state_dict())
     assert loaded == len(actual.state_dict())
+    assert spec.weight_map()["layers.1.moe.router.expert_bias"] == [bias_name]
+    assert "layers.1.moe.expert_bias" in actual.state_dict()
+    torch.testing.assert_close(
+        actual.layers[1].moe.expert_bias,
+        hf_weights[bias_name],
+    )
     input_ids = torch.tensor([[1, 2, 3, 4], [4, 3, 2, 1]])
     labels = torch.tensor([[2, 3, 4, 5], [3, 2, 1, 0]])
 
