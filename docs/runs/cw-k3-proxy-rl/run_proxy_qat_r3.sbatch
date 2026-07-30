@@ -37,7 +37,7 @@ diag_pid=$!
 
 set +e
 srun \
-  --container-image="${K3_RUNTIME_IMAGE}" \
+  --container-image="${K3_TRAINING_IMAGE}" \
   --container-mounts=/lustre:/lustre \
   --export=ALL \
   /bin/bash --noprofile --norc -c '

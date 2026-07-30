@@ -12,8 +12,8 @@ source "${recipe_dir}/image.env"
 : "${K3_CACHE_ROOT:?set K3_CACHE_ROOT to a persistent shared cache root}"
 : "${MEGATRON_ROOT:=${K3_MEGATRON_ROOT}}"
 : "${FLA_SITE:=${K3_FLA_SITE}}"
-: "${MLITE_SM90_SITE:=${K3_MLITE_SM90_SITE}}"
-: "${TRAINING_VLLM_SITE:=${K3_TRAINING_VLLM_SITE}}"
+: "${VLLM_SITE:=${K3_VLLM_SITE}}"
+export MEGATRON_ROOT FLA_SITE VLLM_SITE MLITE_SOURCE_SHA
 
 assert_source_sha() {
   local path=$1 expected=$2 label=$3 actual
@@ -45,7 +45,7 @@ export CUDA_HOME=/usr/local/cuda
 export PATH="${CUDA_HOME}/bin:/usr/local/bin:/usr/bin:/bin"
 export LD_LIBRARY_PATH="/usr/local/cuda/compat/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export MLITE_K3_AUTO_REGISTER=1
-export PYTHONPATH="${recipe_dir}:${K3_ROOT}/src:${MLITE_ROOT}/experimental/lite:${MLITE_ROOT}/experimental/lite/examples/verl:${MEGATRON_ROOT}:${VERL_ROOT}:${TRAINING_VLLM_SITE}:${FLA_SITE}:${MLITE_SM90_SITE}/nvidia_cutlass_dsl/python_packages:${MLITE_SM90_SITE}:${VERL_DEPS_SITE}"
+export PYTHONPATH="${recipe_dir}:${K3_ROOT}/src:${MLITE_ROOT}/experimental/lite:${MLITE_ROOT}/experimental/lite/examples/verl:${MEGATRON_ROOT}:${VERL_ROOT}:${VLLM_SITE}:${FLA_SITE}:${VERL_DEPS_SITE}"
 
 python_bin=$(command -v python3)
 python_version=$("${python_bin}" -c 'import platform; print(platform.python_version())')

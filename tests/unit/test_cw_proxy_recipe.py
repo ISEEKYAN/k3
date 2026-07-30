@@ -9,32 +9,20 @@ def read(name: str) -> str:
     return (RECIPE / name).read_text()
 
 
-def test_image_contract_uses_x86_multiarch_k3_release():
+def test_image_contract_reuses_the_proven_k3_vllm_overlay():
     image = read("image.env")
 
-    assert "K3_REQUESTED_IMAGE=docker://aosheninferact/vllm-openai:kimi-k3" in image
-    assert "K3_IMAGE=docker://vllm/vllm-openai:kimi-k3" in image
-    assert "K3_IMAGE_INDEX_DIGEST=sha256:" in image
-    assert "K3_IMAGE_AMD64_DIGEST=sha256:" in image
+    assert "K3_TRAINING_IMAGE=" in image
+    assert "pytorch_26.04-py3.sqsh" in image
+    assert "K3_VLLM_OVERLAY=" in image
+    assert "k3-vllm-main-prs-overlay" in image
+    assert 'K3_VLLM_SITE="${K3_VLLM_OVERLAY}/lib/python3.12/site-packages"' in image
     assert "MLITE_SOURCE_SHA=85eacfbc1" in image
-    assert "K3_RUNTIME_IMAGE" in image
 
 
-def test_image_cache_recipe_saves_once_and_runtime_recipes_reuse_it():
-    cache = read("cache_image.sbatch")
-
-    assert "#SBATCH --partition=batch_short" in cache
-    assert "#SBATCH --gres=gpu:1" in cache
-    assert "#SBATCH --mem=512G" in cache
-    assert '--container-image="${K3_IMAGE}"' in cache
-    assert '--container-save="${K3_IMAGE_SQSH}"' in cache
-    for name in (
-        "audit_te_build_env.sbatch",
-        "build_proxy_checkpoint.sbatch",
-        "build_te_overlay.sbatch",
-        "run_proxy_qat_r3.sbatch",
-    ):
-        assert '--container-image="${K3_RUNTIME_IMAGE}"' in read(name)
+def test_active_runtime_recipes_reuse_the_proven_training_base():
+    for name in ("run_proxy_qat_r3.sbatch", "run_proxy_stage.sbatch"):
+        assert '--container-image="${K3_TRAINING_IMAGE}"' in read(name)
     assert '--container-image="${K3_TRAINING_IMAGE}"' in read("run_proxy_stage.sbatch")
     assert '--container-image="${K3_TRAINING_IMAGE}"' in read(
         "validate_training_overlay.sbatch"
@@ -52,6 +40,10 @@ def test_training_environment_preserves_three_pollution_boundaries():
     assert "CC=/usr/bin/gcc" in env
     assert "PYTHONNOUSERSITE=1" in env
     assert "OMP_NUM_THREADS=1" in env
+    assert "VLLM_SITE:=${K3_VLLM_SITE}" in env
+    assert "TRAINING_VLLM_SITE" not in env
+    assert "MLITE_SM90_SITE" not in env
+    assert "${VLLM_SITE}:${FLA_SITE}:${VERL_DEPS_SITE}" in env
     assert "CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH" in env
     assert "CC CXX CFLAGS CPPFLAGS CXXFLAGS LDFLAGS" in env
 
@@ -83,10 +75,15 @@ def test_overlay_validation_is_inside_srun():
     assert "srun" in sbatch
     assert "validate_training_overlay.py" in sbatch
     assert "transformer_engine.pytorch" in validation
+    assert '"vllm_file": vllm.__file__' in validation
+    assert '"transformer_engine_file": transformer_engine.__file__' in validation
     assert "import fla" in validation
+    assert '"fla_file": fla.__file__' in validation
     assert 'fla_utils.device_platform == "cuda"' in validation
     assert "fla_utils.IS_NVIDIA" in validation
     assert "import megatron.lite" in validation
+    assert '"megatron_lite": megatron.lite.__file__' in validation
+    assert '"megatron_lite_version": os.environ["MLITE_SOURCE_SHA"]' in validation
     assert "import mlite_k3" in validation
     assert "import verl" in validation
     assert 'import_module("verl.trainer.main_ppo")' in validation
