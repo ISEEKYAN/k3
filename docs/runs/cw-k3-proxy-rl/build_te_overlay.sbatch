@@ -50,7 +50,14 @@ export NVTE_CUDA_ARCHS=90
 # no development linker name, so fail-loudly disable only that optional build.
 export NVTE_WITH_NCCL_EP=0
 
+build_tmp_root="${SLURM_TMPDIR:-/tmp}"
+export TMPDIR
+TMPDIR=$(mktemp -d "${build_tmp_root}/k3-te-build.XXXXXX")
+export PIP_CACHE_DIR="${TMPDIR}/pip-cache"
+mkdir -p "${PIP_CACHE_DIR}"
+
 /usr/bin/python3 -m pip install \
+  --no-cache-dir \
   --no-deps \
   --target "${TE_OVERLAY}/cuda-toolchain" \
   -r "'"${recipe_dir}"'/te-build-requirements.txt"
@@ -66,6 +73,7 @@ export PYTHONPATH="${TE_OVERLAY}/cuda-toolchain"
 "${nvcc}" --version
 
 /usr/bin/python3 -m pip install \
+  --no-cache-dir \
   --no-deps \
   --no-build-isolation \
   --target "${TE_OVERLAY}" \

@@ -86,12 +86,17 @@ def test_overlay_validation_is_inside_srun():
 def test_te_audit_uses_node_local_dependencies_and_reports_missing_git():
     sbatch = read("audit_te_build_env.sbatch")
     audit = read("audit_te_build_env.py")
+    build = read("build_te_overlay.sbatch")
 
     assert "SLURM_TMPDIR" in sbatch
     assert "TE_SUBMODULE_STATUS" in sbatch
     assert 'command("git", "--version")' in audit
     assert '"required": False' in audit
+    assert '"tmp_disk"' in audit
     assert "FileNotFoundError" not in audit
+    assert "PIP_CACHE_DIR" in build
+    assert "TMPDIR" in build
+    assert "--no-cache-dir" in build
 
 
 def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():

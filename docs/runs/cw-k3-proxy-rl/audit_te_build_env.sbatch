@@ -34,6 +34,7 @@ export NVTE_CUDA_ARCHS=90
 export NVTE_WITH_NCCL_EP=0
 
 audit_tmp_root="${SLURM_TMPDIR:-/tmp}"
+export TE_BUILD_TMPDIR="${audit_tmp_root}"
 TE_BUILD_DEPS=$(mktemp -d "${audit_tmp_root}/k3-te-audit-deps.XXXXXX")
 export TE_BUILD_DEPS
 /usr/bin/python3 -m pip install \

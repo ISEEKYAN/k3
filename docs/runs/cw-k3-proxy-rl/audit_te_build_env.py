@@ -43,6 +43,9 @@ def distribution(name: str) -> dict[str, object]:
 
 def main() -> None:
     te_source = Path(os.environ["TE_SOURCE"]).resolve()
+    tmp_dir = Path(os.environ["TE_BUILD_TMPDIR"]).resolve()
+    min_tmp_bytes = int(os.environ.get("TE_MIN_TMP_BYTES", str(20 * 1024**3)))
+    tmp_usage = shutil.disk_usage(tmp_dir)
     sys.path.insert(0, str(te_source))
     from build_tools import utils
 
@@ -52,6 +55,12 @@ def main() -> None:
             "value": sys.version,
         },
         "torch": distribution("torch"),
+        "tmp_disk": {
+            "ok": tmp_usage.free >= min_tmp_bytes,
+            "path": str(tmp_dir),
+            "free_bytes": tmp_usage.free,
+            "required_bytes": min_tmp_bytes,
+        },
         "setuptools": distribution("setuptools"),
         "wheel": distribution("wheel"),
         "pip": distribution("pip"),
