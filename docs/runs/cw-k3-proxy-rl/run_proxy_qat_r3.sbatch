@@ -39,6 +39,7 @@ set +e
 srun \
   --account=coreai_devtech_all \
   --container-image="${K3_TRAINING_IMAGE}" \
+  --no-container-entrypoint \
   --container-mounts=/lustre:/lustre \
   --export=ALL \
   /bin/bash --noprofile --norc -c '

@@ -197,6 +197,7 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "#SBATCH --nodes=1" in runner
     assert "#SBATCH --gpus-per-node=8" in runner
     assert "srun \\\n  --account=coreai_devtech_all" in runner
+    assert "--no-container-entrypoint" in runner
     assert 'LOGGER="[console,file,wandb]"' in runner
     assert "megatron-core-moe-dev" in runner
     assert "impl_cfg.qat.enabled=true" in runner
