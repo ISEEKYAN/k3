@@ -7,7 +7,7 @@ paths work.
 ## Frozen bootstrap references
 
 - Megatron Lite: `ISEEKYAN/Megatron-LM` commit
-  `9a5d44e932587ae90489d23b782f0c3cd681aa46`
+  `85eacfbc1acbcfef9b003e0301d409be464d1377`
 - External-package template: `ISEEKYAN/hy3` commit
   `77d99447f6726891d2fcd86f350378466f403783`
 - Model release: `moonshotai/Kimi-K3` commit
