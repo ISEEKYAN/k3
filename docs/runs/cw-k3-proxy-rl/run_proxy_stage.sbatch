@@ -29,7 +29,7 @@ esac
 diagnose() {
   echo "K3_GPU_DIAG stage=${STAGE} phase=$1 job=${SLURM_JOB_ID} time=$(date -Is)"
   nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total --format=csv
-  ps -eo pid,ppid,stat,etime,cmd --forest
+  ps -C python3 -o pid,ppid,stat,etime,cmd
 }
 (
   sleep 120

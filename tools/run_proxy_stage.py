@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 from types import SimpleNamespace
@@ -19,6 +20,21 @@ from mlite_k3.lite.protocol import (
     build_model_config,
     is_expert_param,
 )
+
+
+def _mark(rank: int, phase: str) -> None:
+    print(
+        "K3_PROXY_PHASE="
+        + json.dumps(
+            {
+                "rank": rank,
+                "phase": phase,
+                "time": datetime.datetime.now(datetime.UTC).isoformat(),
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
 
 
 def _logical_numel(model: torch.nn.Module, device: torch.device) -> dict[str, int]:
@@ -68,6 +84,7 @@ def main() -> None:
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
+    _mark(rank, "dist_ready")
 
     config = build_model_config(args.model_path)
     if config.num_hidden_layers != 12 or config.num_experts != 56:
@@ -75,6 +92,7 @@ def main() -> None:
             "proxy config mismatch: "
             f"layers={config.num_hidden_layers} experts={config.num_experts}"
         )
+    _mark(rank, "build_start")
     bundle = build_model(
         config,
         impl_cfg=ImplConfig(
@@ -90,9 +108,11 @@ def main() -> None:
         ),
     )
     model = bundle.chunks[0].train()
+    _mark(rank, "build_done")
     if any(getattr(module, "moe_router_fusion", False) for module in model.modules()):
         raise RuntimeError("R3 carrier found a fused router")
     counts = _logical_numel(model, device)
+    _mark(rank, "numel_done")
     result: dict[str, object] = {
         "stage": args.stage,
         "world_size": world_size,
@@ -115,9 +135,13 @@ def main() -> None:
             loss_mask=torch.ones(1, args.sequence_length, device=device),
         )
         model.zero_grad(set_to_none=True)
+        _mark(rank, "forward_start")
         output = bundle.forward_step(model, batch)
+        _mark(rank, "forward_done")
         loss = output["loss"]
+        _mark(rank, "backward_start")
         loss.backward()
+        _mark(rank, "backward_done")
         finite_grads = all(
             parameter.grad is None or torch.isfinite(parameter.grad).all()
             for parameter in model.parameters()

@@ -213,3 +213,21 @@ def test_fail_local_gpu_carrier_has_four_ordered_stages():
     assert "validate_training_overlay.py" in carrier
     assert "run_proxy_stage.py" in carrier
     assert "OMP_NUM_THREADS" in read("k3_training_env.sh")
+    assert "ps -C python3" in carrier
+    assert "ps -eo pid,ppid,stat,etime,cmd --forest" not in carrier
+
+
+def test_proxy_stage_emits_fail_local_phase_markers():
+    runner = (ROOT / "tools/run_proxy_stage.py").read_text()
+
+    for phase in (
+        "dist_ready",
+        "build_start",
+        "build_done",
+        "numel_done",
+        "forward_start",
+        "forward_done",
+        "backward_start",
+        "backward_done",
+    ):
+        assert f'"{phase}"' in runner
