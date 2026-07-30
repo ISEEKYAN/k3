@@ -300,6 +300,9 @@ def test_proxy_generate_reuses_external_launcher_at_tp8():
     assert "def _warm_attn_res(" in warmup
     assert "def _warm_recurrent_kda(" in warmup
     assert "def kimi_k3_triton_warmup(" in warmup
+    assert "ensure_optional_router_warmup_compatibility()" in driver
+    assert 'find_spec("quack") is not None' in driver
+    assert "kernel_warmup._warmup_ll_bf16_router_gemm = " in driver
     assert "K3_PROXY_GENERATE_OK" in driver
 
 
