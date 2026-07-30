@@ -16,6 +16,17 @@ from vllm import LLM, SamplingParams
 from vllm.inputs import TokensPrompt
 
 
+def ensure_k3_env_compatibility() -> None:
+    """Disable the optional overlap when its env registration was not merged."""
+    if not hasattr(envs, "VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD"):
+        setattr(envs, "VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD", 0)
+        print(
+            "K3_VLLM_ENV_COMPAT "
+            "VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD=0",
+            flush=True,
+        )
+
+
 def initialize_world() -> None:
     if envs.VLLM_DISTRIBUTED_USE_SPLIT_GROUP:
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -31,6 +42,7 @@ def initialize_world() -> None:
 def main() -> None:
     assert "RAY_ADDRESS" not in os.environ
     assert int(os.environ["WORLD_SIZE"]) == 8
+    ensure_k3_env_compatibility()
     initialize_world()
     rank = dist.get_rank()
 

@@ -283,6 +283,8 @@ def test_proxy_generate_reuses_external_launcher_at_tp8():
     assert 'distributed_executor_backend="external_launcher"' in driver
     assert "skip_tokenizer_init=True" in driver
     assert "TokensPrompt" in driver
+    assert "ensure_k3_env_compatibility()" in driver
+    assert 'setattr(envs, "VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD", 0)' in driver
     assert "K3_PROXY_GENERATE_OK" in driver
 
 
