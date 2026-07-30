@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #SBATCH --account=coreai_devtech_all
-#SBATCH --partition=cpu_short
+#SBATCH --partition=batch_short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=512G
 #SBATCH --time=00:20:00
 #SBATCH --job-name=k3-cache-image
 #SBATCH --output=k3-cache-image-%j.out

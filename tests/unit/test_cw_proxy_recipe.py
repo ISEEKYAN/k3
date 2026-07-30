@@ -23,6 +23,9 @@ def test_image_contract_uses_x86_multiarch_k3_release():
 def test_image_cache_recipe_saves_once_and_runtime_recipes_reuse_it():
     cache = read("cache_image.sbatch")
 
+    assert "#SBATCH --partition=batch_short" in cache
+    assert "#SBATCH --gres=gpu:1" in cache
+    assert "#SBATCH --mem=512G" in cache
     assert '--container-image="${K3_IMAGE}"' in cache
     assert '--container-save="${K3_IMAGE_SQSH}"' in cache
     for name in (
