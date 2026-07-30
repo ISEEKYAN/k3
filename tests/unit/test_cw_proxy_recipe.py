@@ -291,12 +291,14 @@ def test_container_python_and_pruned_verl_site_fail_loud():
         "hydra",
         "codetiming",
         "orjson",
+        "accelerate",
         "wandb",
     ):
         assert package in validate
     assert '"hydra": ("hydra", verl_pruned_site)' in validate
     assert '"codetiming": ("codetiming", verl_pruned_site)' in validate
     assert '"orjson": ("orjson", verl_pruned_site)' in validate
+    assert '"accelerate": ("accelerate", verl_pruned_site)' in validate
     assert '"omegaconf":' not in validate
     assert '"antlr4":' not in validate
     assert '"0.10.0"' in validate

@@ -22,6 +22,8 @@ The VERL dependency site is a pruned view of the established training overlay.
 It excludes packages owned by the base image or K3 vLLM overlay, preventing
 their torch, Hugging Face, vLLM, Ray, CUDA, and NVIDIA packages from being
 shadowed. The full closure probe must print `FULL_CLOSURE_OK` before Ray starts.
+The pruned site retains accelerate because PEFT imports it while constructing
+the deeper PPO trainer graph; the base and K3 vLLM sites do not provide it.
 
 Set `K3_IMAGE_SQSH` to a new shared path and run `cache_image.sbatch` once.
 The job uses pyxis `--container-save`, records the squashfs SHA-256, and all

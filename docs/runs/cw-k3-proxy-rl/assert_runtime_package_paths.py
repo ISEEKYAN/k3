@@ -48,6 +48,7 @@ def assert_runtime_package_paths() -> dict[str, object]:
         "hydra": ("hydra", verl_pruned_site),
         "codetiming": ("codetiming", verl_pruned_site),
         "orjson": ("orjson", verl_pruned_site),
+        "accelerate": ("accelerate", verl_pruned_site),
     }
     resolved: dict[str, str] = {}
     for label, (module_name, expected_site) in expected_modules.items():
