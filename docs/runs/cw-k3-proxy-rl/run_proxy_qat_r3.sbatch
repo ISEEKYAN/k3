@@ -77,6 +77,16 @@ export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 export RAY_memory_monitor_refresh_ms=0
 export VLLM_USE_V1=1
 export VLLM_ALLREDUCE_USE_SYMM_MEM=0
+export RAY_TMPDIR="/tmp/k3-ray-${SLURM_JOB_ID}"
+ray_log_archive="${OUTPUT_ROOT}/ray-logs-${SLURM_JOB_ID}"
+mkdir -p "${RAY_TMPDIR}"
+archive_ray_logs() {
+  if [[ -d "${RAY_TMPDIR}" ]]; then
+    mkdir -p "${ray_log_archive}"
+    cp -a "${RAY_TMPDIR}/." "${ray_log_archive}/"
+  fi
+}
+trap archive_ray_logs EXIT
 
 log_file="${OUTPUT_ROOT}/${RUN_NAME}.launcher.log"
 mkdir -p "${OUTPUT_ROOT}"

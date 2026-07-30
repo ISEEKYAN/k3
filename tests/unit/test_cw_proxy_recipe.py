@@ -208,6 +208,23 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "++actor_rollout_ref.actor.engine.impl_cfg.moe_router_fusion=false" in runner
     assert "sleep 120" in runner
     assert "sleep 180" in runner
+    assert 'RAY_TMPDIR="/tmp/k3-ray-${SLURM_JOB_ID}"' in runner
+    assert "archive_ray_logs" in runner
+    assert 'ray-logs-${SLURM_JOB_ID}' in runner
+
+
+def test_ray_startup_probe_is_a_zero_gpu_full_environment_gate():
+    probe = read("probe_ray_startup.sbatch")
+
+    assert "#SBATCH --partition=cpu_short" in probe
+    assert "--gpus" not in probe
+    assert "srun \\\n  --account=coreai_devtech_all" in probe
+    assert "--no-container-entrypoint" in probe
+    assert "k3_training_env.sh" in probe
+    assert 'RAY_TMPDIR="/tmp/k3-ray-${SLURM_JOB_ID}"' in probe
+    assert "ray.init(" in probe
+    assert "K3_RAY_STARTUP_OK" in probe
+    assert 'ray-logs-${SLURM_JOB_ID}' in probe
 
 
 def test_proxy_checkpoint_build_is_a_zero_gpu_srun():
