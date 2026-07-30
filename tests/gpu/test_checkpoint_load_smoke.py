@@ -111,25 +111,25 @@ def main() -> None:
     root = Path(os.environ["K3_LOAD_SMOKE_DIR"])
     config = _config()
 
+    torch.manual_seed(20260729)
+    reference = K3ParallelModel(config, ParallelState()).to(
+        device=device,
+        dtype=torch.bfloat16,
+    )
+    summary = save_hf_weights(
+        reference,
+        root,
+        config,
+        ParallelState(),
+        target="mxfp4",
+    )
+    del reference
+    torch.cuda.empty_cache()
     if rank == 0:
-        torch.manual_seed(20260729)
-        reference = K3ParallelModel(config, ParallelState()).to(
-            device=device,
-            dtype=torch.bfloat16,
-        )
-        summary = save_hf_weights(
-            reference,
-            root,
-            config,
-            ParallelState(),
-            target="mxfp4",
-        )
         (root / "config.json").write_text(
             json.dumps(_quantization_config(config), sort_keys=True),
             encoding="utf-8",
         )
-        del reference
-        torch.cuda.empty_cache()
         print(
             "K3_REDUCED_CHECKPOINT="
             + json.dumps(
@@ -167,6 +167,8 @@ def main() -> None:
         [single],
         QATSpec(enabled=True, format="mxfp4", ignore_patterns=()),
     )
+    if qat_stats["quantized_modules"] <= 0:
+        raise RuntimeError("K3 QAT smoke did not parametrize any module")
     qat_export = dict(
         export_hf_weights(
             single,
