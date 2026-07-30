@@ -15,6 +15,7 @@ recipe_dir="${K3_RECIPE_DIR:-${SLURM_SUBMIT_DIR:-$(pwd -L)}}"
 source "${recipe_dir}/image.env"
 
 srun \
+  --account=coreai_devtech_all \
   --container-image="${K3_TRAINING_IMAGE}" \
   --container-mounts=/lustre:/lustre \
   --export=ALL \

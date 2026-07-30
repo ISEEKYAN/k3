@@ -73,6 +73,7 @@ def test_overlay_validation_is_inside_srun():
 
     assert "#SBATCH --partition=cpu_short" in sbatch
     assert "srun" in sbatch
+    assert "srun \\\n  --account=coreai_devtech_all" in sbatch
     assert "validate_training_overlay.py" in sbatch
     assert "transformer_engine.pytorch" in validation
     assert '"vllm_file": vllm.__file__' in validation
@@ -177,6 +178,7 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "#SBATCH --partition=interactive" in runner
     assert "#SBATCH --nodes=1" in runner
     assert "#SBATCH --gpus-per-node=8" in runner
+    assert "srun \\\n  --account=coreai_devtech_all" in runner
     assert 'LOGGER="[console,file,wandb]"' in runner
     assert "megatron-core-moe-dev" in runner
     assert "impl_cfg.qat.enabled=true" in runner
@@ -204,6 +206,7 @@ def test_fail_local_gpu_carrier_has_four_ordered_stages():
     assert "#SBATCH --partition=interactive" in carrier
     assert "#SBATCH --nodes=1" in carrier
     assert "#SBATCH --gpus-per-node=8" in carrier
+    assert "srun \\\n  --account=coreai_devtech_all" in carrier
     assert "import | construct | fwbw | qat" in carrier
     assert "validate_training_overlay.py" in carrier
     assert "run_proxy_stage.py" in carrier

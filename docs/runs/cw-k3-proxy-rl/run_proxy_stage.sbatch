@@ -41,6 +41,7 @@ diag_pid=$!
 
 set +e
 srun \
+  --account=coreai_devtech_all \
   --container-image="${K3_TRAINING_IMAGE}" \
   --container-mounts=/lustre:/lustre \
   --export=STAGE,MODEL_PATH,K3_ROOT,MLITE_ROOT,VERL_ROOT,VERL_DEPS_SITE,K3_CACHE_ROOT \
