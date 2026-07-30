@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from torch.distributed.tensor import Replicate, Shard
 
 from mlite_k3.config import K3Config
 from mlite_k3.lite import protocol
@@ -49,6 +50,104 @@ def test_protocol_exports_shared_zigzag_r3_contract():
     assert (
         protocol.unpack_thd_forward_output is protocol_utils.unpack_thd_forward_output
     )
+
+
+def test_k3_dist_opt_uses_shared_training_optimizer_primitive(monkeypatch):
+    calls = []
+    expected_optimizer = object()
+    expected_finalize = object()
+
+    def build(chunks, **kwargs):
+        calls.append((chunks, kwargs))
+        return expected_optimizer, expected_finalize
+
+    monkeypatch.setattr(
+        "megatron.lite.primitive.optimizers.megatron_wrap."
+        "build_dist_opt_training_optimizer",
+        build,
+    )
+    chunks = [object()]
+    model_cfg = _tiny_config()
+    impl_cfg = ImplConfig(
+        optimizer="dist_opt",
+        optimizer_config=SimpleNamespace(lr=1e-5),
+    )
+    ps = object()
+
+    optimizer, finalize = protocol._build_dist_opt_optimizer(
+        chunks, model_cfg, impl_cfg, ps
+    )
+
+    assert (optimizer, finalize) == (expected_optimizer, expected_finalize)
+    assert calls == [
+        (
+            chunks,
+            {
+                "model_cfg": model_cfg,
+                "impl_cfg": impl_cfg,
+                "ps": ps,
+                "model_name": "k3",
+                "is_expert": protocol.is_expert_param,
+                "deterministic": False,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "expert", "expected"),
+    (
+        (
+            "layers.1.moe.experts.fc1.weight0",
+            True,
+            (Replicate, Replicate, Shard, Shard),
+        ),
+        (
+            "layers.1.moe.experts.fc2.weight0",
+            True,
+            (Replicate, Replicate, Shard, Shard),
+        ),
+        (
+            "layers.1.moe.shared_experts.gate_up.linear.weight",
+            False,
+            (Replicate, Replicate, Replicate, Shard),
+        ),
+        (
+            "layers.1.self_attention.o_proj.linear.weight",
+            False,
+            (Replicate, Replicate, Replicate, Shard),
+        ),
+    ),
+)
+def test_dist_opt_checkpoint_placement_matches_k3_parallel_layout(
+    name, expert, expected
+):
+    placements = protocol.PLACEMENT_FN(name)
+
+    assert protocol.is_expert_param(name) is expert
+    assert tuple(type(placement) for placement in placements) == expected
+    if name.endswith("fc1.weight0"):
+        assert placements[2].dim == 0
+        assert placements[3].dim == 0
+    elif name.endswith("fc2.weight0"):
+        assert placements[2].dim == 0
+        assert placements[3].dim == 1
+    elif "gate_up" in name:
+        assert placements[3].dim == 0
+    elif "o_proj" in name:
+        assert placements[3].dim == 1
+
+
+def test_unknown_optimizer_fails_before_model_initialization():
+    with pytest.raises(ValueError, match="Unknown K3 lite optimizer"):
+        build_model(
+            _tiny_config(),
+            impl_cfg=ImplConfig(
+                device="cpu",
+                dtype="float32",
+                optimizer="not-an-optimizer",
+            ),
+        )
 
 
 def test_k3_parallel_kda_imports_against_latest_mlite():

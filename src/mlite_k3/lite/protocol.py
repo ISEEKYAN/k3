@@ -54,6 +54,7 @@ _VALIDATION_DOC_EVIDENCE = re.compile(
 class ImplConfig:
     parallel: Any = None
     optimizer: str | None = None
+    optimizer_config: Any = None
     device: str = "cuda"
     dtype: str = "bfloat16"
     use_thd: bool = False
@@ -62,6 +63,78 @@ class ImplConfig:
     kda_cp_mode: str = "headwise"
     qat: QATSpec | dict[str, Any] | None = None
     validation_evidence: Mapping[str, tuple[str, ...]] | None = None
+
+
+def is_expert_param(name: str) -> bool:
+    return ".moe.experts.fc" in name
+
+
+def PLACEMENT_FN(param_name: str) -> list:
+    from torch.distributed.tensor import Replicate, Shard
+
+    if is_expert_param(param_name):
+        if ".fc1." in param_name:
+            return [Replicate(), Replicate(), Shard(0), Shard(0)]
+        if ".fc2." in param_name:
+            return [Replicate(), Replicate(), Shard(0), Shard(1)]
+        return [Replicate(), Replicate(), Replicate(), Replicate()]
+    if param_name.endswith(
+        (
+            ".self_attention.q_proj.linear.weight",
+            ".self_attention.k_proj.linear.weight",
+            ".self_attention.v_proj.linear.weight",
+            ".self_attention.g_proj.linear.weight",
+            ".self_attention.f_b_proj.linear.weight",
+            ".self_attention.b_proj.linear.weight",
+            ".self_attention.linear_q_up_proj.linear.weight",
+            ".self_attention.linear_kv_up_proj.linear.weight",
+            ".self_attention.linear_g_proj.linear.weight",
+            ".mlp.gate_up.linear.weight",
+            ".moe.shared_experts.gate_up.linear.weight",
+        )
+    ) or param_name.endswith(
+        (
+            ".self_attention.q_conv1d.weight",
+            ".self_attention.k_conv1d.weight",
+            ".self_attention.v_conv1d.weight",
+            ".self_attention.A_log",
+            ".self_attention.dt_bias",
+        )
+    ):
+        return [Replicate(), Replicate(), Replicate(), Shard(0)]
+    if param_name.endswith(
+        (
+            ".self_attention.o_proj.linear.weight",
+            ".self_attention.linear_proj.linear.weight",
+            ".mlp.down.linear.weight",
+            ".moe.shared_experts.down.linear.weight",
+        )
+    ):
+        return [Replicate(), Replicate(), Replicate(), Shard(1)]
+    if param_name in {
+        "embed_tokens.embedding.weight",
+        "lm_head.col.linear.weight",
+    }:
+        return [Replicate(), Replicate(), Replicate(), Shard(0)]
+    return [Replicate(), Replicate(), Replicate(), Replicate()]
+
+
+def _build_dist_opt_optimizer(
+    chunks, model_cfg: K3Config, impl_cfg: ImplConfig, ps: Any
+):
+    from megatron.lite.primitive.optimizers.megatron_wrap import (
+        build_dist_opt_training_optimizer,
+    )
+
+    return build_dist_opt_training_optimizer(
+        chunks,
+        model_cfg=model_cfg,
+        impl_cfg=impl_cfg,
+        ps=ps,
+        model_name="k3",
+        is_expert=is_expert_param,
+        deterministic=impl_cfg.deterministic,
+    )
 
 
 def build_model_config(source: str | Path | dict, **overrides) -> K3Config:
@@ -138,8 +211,8 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
         name: _parallel_size(impl_cfg.parallel, name)
         for name in ("tp", "ep", "etp", "pp", "cp")
     }
-    if impl_cfg.optimizer is not None:
-        raise NotImplementedError("K3 optimizer integration is not validated yet")
+    if impl_cfg.optimizer not in (None, "dist_opt"):
+        raise ValueError(f"Unknown K3 lite optimizer: {impl_cfg.optimizer!r}.")
     from megatron.lite.primitive.bundle import ModelBundle
     from megatron.lite.primitive.parallel import ParallelState, init_parallel
 
@@ -215,6 +288,25 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
         )
     qat_stats = apply_qat_to_chunks(chunks, qat_spec)
 
+    optimizer = None
+    finalize_grads = None
+    optimizer_backend = "none"
+    if impl_cfg.optimizer == "dist_opt":
+        optimizer, finalize_grads = _build_dist_opt_optimizer(
+            chunks, model_cfg, impl_cfg, ps
+        )
+        from megatron.lite.primitive.ckpt import attach_model_sharded_state_dict
+        from megatron.lite.runtime.megatron_utils import register_training_hooks
+
+        attach_model_sharded_state_dict(
+            chunks,
+            ps,
+            get_placements=PLACEMENT_FN,
+            is_expert=is_expert_param,
+        )
+        register_training_hooks(chunks, optimizer)
+        optimizer_backend = "dist_opt"
+
     validated_axes, validation_evidence = _resolve_validated_axes(
         dimensions,
         use_thd=impl_cfg.use_thd,
@@ -223,9 +315,12 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
     return ModelBundle(
         chunks=chunks,
         parallel_state=ps,
+        optimizer=optimizer,
+        finalize_grads=finalize_grads,
         forward_step=forward_step,
         extras={
             "model_cfg": model_cfg,
+            "optimizer_backend": optimizer_backend,
             "validated_scope": validated_scope,
             "validated_axes": validated_axes,
             "validation_evidence": validation_evidence,
