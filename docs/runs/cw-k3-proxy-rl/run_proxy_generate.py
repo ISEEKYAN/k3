@@ -10,6 +10,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 import vllm
+import vllm._custom_ops as ops
 import vllm.envs as envs
 import wandb
 from vllm import LLM, SamplingParams
@@ -21,10 +22,28 @@ def ensure_k3_env_compatibility() -> None:
     if not hasattr(envs, "VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD"):
         setattr(envs, "VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD", 0)
         print(
-            "K3_VLLM_ENV_COMPAT "
-            "VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD=0",
+            "K3_VLLM_ENV_COMPAT VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD=0",
             flush=True,
         )
+
+
+def ensure_moe_sum_compatibility() -> None:
+    """Use the inherited two-argument MoE binary only for the non-EP path."""
+    if len(torch.ops._moe_C.moe_sum.default._schema.arguments) != 2:
+        return
+
+    def moe_sum_legacy_binary_compatibility(
+        input: torch.Tensor,
+        output: torch.Tensor,
+        topk_ids: torch.Tensor | None = None,
+        expert_map: torch.Tensor | None = None,
+    ) -> None:
+        if topk_ids is not None or expert_map is not None:
+            raise RuntimeError("legacy two-argument _moe_C cannot apply an expert map")
+        torch.ops._moe_C.moe_sum(input, output)
+
+    ops.moe_sum = moe_sum_legacy_binary_compatibility
+    print("K3_VLLM_MOE_SUM_COMPAT schema_args=2", flush=True)
 
 
 def initialize_world() -> None:
@@ -43,6 +62,7 @@ def main() -> None:
     assert "RAY_ADDRESS" not in os.environ
     assert int(os.environ["WORLD_SIZE"]) == 8
     ensure_k3_env_compatibility()
+    ensure_moe_sum_compatibility()
     initialize_world()
     rank = dist.get_rank()
 

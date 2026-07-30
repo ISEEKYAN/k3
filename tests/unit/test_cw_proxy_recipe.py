@@ -51,9 +51,9 @@ def test_training_environment_preserves_three_pollution_boundaries():
     assert "MLITE_SM90_SITE" not in env
     assert 'export PYTHONPATH="${VLLM_SITE}:${FLA_SITE}:' in env
     assert (
-        '${FLA_SITE}:${CUTLASS_DSL_SITE}:${recipe_dir}:${K3_ROOT}/src:'
-        '${MEGATRON_ROOT}:${VERL_ROOT}:${VERL_DEPS_SITE}:'
-        '${MLITE_ROOT}/experimental/lite/examples/verl:'
+        "${FLA_SITE}:${CUTLASS_DSL_SITE}:${recipe_dir}:${K3_ROOT}/src:"
+        "${MEGATRON_ROOT}:${VERL_ROOT}:${VERL_DEPS_SITE}:"
+        "${MLITE_ROOT}/experimental/lite/examples/verl:"
         '${MLITE_ROOT}/experimental/lite"'
     ) in env
     assert "CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH" in env
@@ -264,9 +264,10 @@ def test_proxy_generate_reuses_external_launcher_at_tp8():
     assert "#SBATCH --gpus-per-node=8" in carrier
     assert "#SBATCH --account=coreai_devtech_all" in carrier
     assert "srun \\\n  --account=coreai_devtech_all" in carrier
-    assert "--container-image=\"${K3_TRAINING_IMAGE}\"" in carrier
+    assert '--container-image="${K3_TRAINING_IMAGE}"' in carrier
     assert "OMP_NUM_THREADS=1" in carrier
     assert "K3_VLLM_SITE" in carrier
+    assert "K3_CACHE_ROOT=" in read("image.env")
     assert 'PYTHONPATH="${K3_VLLM_SITE}:${K3_CUTLASS_DSL_SITE}"' in carrier
     assert "PATH=/cm/shared/apps/slurm/current/bin:" in carrier
     assert "CC=/usr/bin/gcc" in carrier
@@ -285,6 +286,10 @@ def test_proxy_generate_reuses_external_launcher_at_tp8():
     assert "TokensPrompt" in driver
     assert "ensure_k3_env_compatibility()" in driver
     assert 'setattr(envs, "VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD", 0)' in driver
+    assert "ensure_moe_sum_compatibility()" in driver
+    assert "torch.ops._moe_C.moe_sum.default._schema.arguments" in driver
+    assert "ops.moe_sum = moe_sum_legacy_binary_compatibility" in driver
+    assert "legacy two-argument _moe_C cannot apply an expert map" in driver
     assert "K3_PROXY_GENERATE_OK" in driver
 
 
