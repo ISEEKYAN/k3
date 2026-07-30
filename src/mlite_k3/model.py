@@ -125,6 +125,7 @@ class K3Model(nn.Module):
         *,
         input_ids: torch.Tensor,
         labels: torch.Tensor | None = None,
+        loss_mask: torch.Tensor | None = None,
         pixel_values: torch.Tensor | None = None,
         images=None,
     ) -> dict[str, torch.Tensor]:
@@ -136,6 +137,11 @@ class K3Model(nn.Module):
             input_ids = input_ids.unsqueeze(0)
         if labels is not None and labels.dim() == 1:
             labels = labels.unsqueeze(0)
+        if loss_mask is not None:
+            if loss_mask.dim() == 1:
+                loss_mask = loss_mask.unsqueeze(0)
+            if labels is None or loss_mask.shape != labels.shape:
+                raise ValueError("loss_mask must have the same shape as labels")
         hidden_states = self.embed_tokens(input_ids)
         batch, sequence, hidden = hidden_states.shape
         block_residual = hidden_states.new_zeros(batch * sequence, 0, hidden)
@@ -150,10 +156,16 @@ class K3Model(nn.Module):
         logits = self.lm_head(self.norm(hidden_states))
         output = {"logits": logits}
         if labels is not None:
-            output["loss"] = F.cross_entropy(
+            token_loss = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)),
                 labels.reshape(-1),
+                reduction="none",
             )
+            if loss_mask is None:
+                output["loss"] = token_loss.mean()
+            else:
+                mask = loss_mask.reshape(-1).to(dtype=token_loss.dtype)
+                output["loss"] = (token_loss * mask).sum() / mask.sum().clamp_min(1)
         return output
 
 

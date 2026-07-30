@@ -125,6 +125,7 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
         return chunk(
             input_ids=batch.input_ids,
             labels=batch.labels,
+            loss_mask=getattr(batch, "loss_mask", None),
         )
 
     chunks = [model]

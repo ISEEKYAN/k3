@@ -107,12 +107,14 @@ def test_thd_contract_rejects_malformed_cu_seqlens(cu_seqlens, message):
         validate_thd_inputs(torch.arange(8).view(1, 8), None, None, packed)
 
 
-def test_thd_contract_requires_identical_q_and_kv_cu_seqlens():
-    packed = _packed()
-    packed.cu_seqlens_kv = torch.tensor([0, 4, 8], dtype=torch.int32)
+def test_thd_contract_rejects_different_q_and_kv_segment_boundaries():
+    tokens = torch.zeros(1, 10, dtype=torch.long)
+    packed = _packed(total_tokens=10)
+    packed.cu_seqlens_q = torch.tensor([0, 5, 10], dtype=torch.int32)
+    packed.cu_seqlens_kv = torch.tensor([0, 7, 10], dtype=torch.int32)
 
-    with pytest.raises(ValueError, match="must match"):
-        validate_thd_inputs(torch.arange(8).view(1, 8), None, None, packed)
+    with pytest.raises(ValueError, match="identical q and kv segment boundaries"):
+        validate_thd_inputs(tokens, None, None, packed)
 
 
 def test_thd_contract_rejects_sequence_lengths_that_cannot_be_zigzag_split():

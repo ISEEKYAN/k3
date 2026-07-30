@@ -48,10 +48,17 @@ def validate_thd_inputs(
     cu_kv = getattr(packed_seq_params, "cu_seqlens_kv", None)
     if not isinstance(cu_q, torch.Tensor) or not isinstance(cu_kv, torch.Tensor):
         raise ValueError("K3 THD requires cu_seqlens_q and cu_seqlens_kv")
-    if cu_q.ndim != 1 or cu_kv.ndim != 1 or cu_q.numel() != cu_kv.numel():
-        raise ValueError("K3 THD cu_seqlens must be matching rank-1 tensors")
+    if cu_q.ndim != 1 or cu_kv.ndim != 1:
+        raise ValueError("K3 THD cu_seqlens_q and cu_seqlens_kv must be rank-1 tensors")
+    if cu_q.numel() != cu_kv.numel():
+        raise ValueError(
+            "K3 THD cu_seqlens_q and cu_seqlens_kv must have the same number "
+            "of boundaries"
+        )
     if not torch.equal(cu_q, cu_kv):
-        raise ValueError("K3 THD q and kv cu_seqlens must match")
+        raise ValueError(
+            "K3 THD self-attention requires identical q and kv segment boundaries"
+        )
     if cu_q.numel() < 2:
         raise ValueError("K3 THD cu_seqlens must contain at least one sequence")
     if int(cu_q[0].item()) != 0:

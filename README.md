@@ -148,6 +148,109 @@ These checks require no CUDA. The verified checkpoint and numerical scope is
 the reduced checkpoint proxy and independent functional proxy below; GPU and
 distributed claims require their own non-skipped tests.
 
+## Attention Residual-aware pipeline layout
+
+`K3ParallelModel` uses Megatron Lite's
+`build_pipeline_chunk_layout(..., decoder_layer_groups=...)` primitive. It
+turns each configured Attention Residual block into an indivisible decoder
+group for the default automatic layout and validates the resulting local stage
+before constructing layers. PP sizes that leave a decoder-empty stage, layouts
+that do not cover every decoder exactly once, and PP larger than the decoder
+count fail during model construction.
+
+The public 93-layer configuration uses `attn_res_block_size=12`, so its groups
+are `0..11`, `12..23`, ..., `72..83`, and the final `84..92`. Automatic PP8
+therefore assigns `[12, 12, 12, 12, 12, 12, 12, 9]` decoder layers. The first
+stage also owns the embedding and the shorter final stage owns the final
+Attention Residual projection, norm, and language-model head.
+
+Block alignment is a default performance policy, not a correctness
+requirement. An explicit `ParallelState.pp_layout` opts out of grouped
+auto-layout and emits a warning describing the tradeoff. The cumulative
+Attention Residual snapshots already travel in the folded pipeline activation,
+so a split block adds no distinct P2P call and remains numerically valid.
+Boundary placement can still change the folded activation width and pipeline
+bubble, so explicit layouts should be benchmarked.
+
+No separate P2P call is added for Attention Residuals. The existing pipeline
+activation packs the normal hidden state together with the cumulative residual
+snapshots. After aligned blocks, the seven PP8 boundaries carry 1 through 7
+snapshots. For sequence-local token count `T`, hidden size `H`, element size
+`D`, and boundary snapshot count `K`, the forward payload is
+`T * H * D * (1 + K)` bytes; the backward gradient has the same shape. With
+K3's `H=7168` and BF16, that is 14 KiB per local token for each hidden-sized
+component, or 28 through 112 KiB total per token at the seven boundaries.
+Residual blending computes its score in FP32 and converts back to the
+activation dtype; pipeline transport is BF16 when activations are BF16, not
+unconditionally FP32.
+
+The default aligned layouts and decoder-only balance estimates are:
+
+| PP | Decoder layers per stage | Layer utilization |
+|---:|---|---:|
+| 2 | `[48, 45]` | 96.875% |
+| 3 | `[24, 36, 33]` | 86.111% |
+| 5 | `[12, 12, 24, 24, 21]` | 77.500% |
+| 6 | `[12, 12, 12, 12, 24, 21]` | 64.583% |
+| 7 | `[12, 12, 12, 12, 12, 12, 21]` | 63.265% |
+| 8 | `[12, 12, 12, 12, 12, 12, 12, 9]` | 96.875% |
+
+Layer utilization is `93 / (PP * max_stage_layers)` and excludes embedding,
+head, attention/MoE heterogeneity, and fill/drain bubble.
+
+For PP3, an explicit `[32, 32, 29]` layout has 96.875% decoder-layer
+utilization and 3.125% imbalance bubble, versus 86.111% utilization and 13.889%
+bubble for any aligned layout whose bottleneck has 36 layers (including
+`[36, 36, 21]` and the default `[24, 36, 33]`). Under a uniform per-layer
+first-order model, reducing the bottleneck from 36 to 32 layers lowers
+bottleneck compute time by 11.1% and raises throughput by 12.5%; production
+timing must account for heterogeneous layers.
+
+The aligned `[36, 36, 21]` boundaries and split `[32, 32, 29]` boundaries both
+carry snapshot counts `[3, 6]`. With K3's `H=7168` and BF16, both therefore
+send 56 KiB and 98 KiB per local token across their two forward boundaries
+(154 KiB total), with the same shapes for backward. Their communication
+difference is zero.
+
+Construct the model normally; the grouped layout is automatic:
+
+```python
+from megatron.lite.primitive.parallel import ParallelState
+from mlite_k3.config import K3Config
+from mlite_k3.lite.model import K3ParallelModel
+
+rank = 7
+parallel = ParallelState(
+    tp_size=1,
+    cp_size=8,
+    dp_size=8,
+    ep_size=32,
+    pp_size=8,
+    pp_rank=rank,
+    pp_is_first=rank == 0,
+    pp_is_last=rank == 7,
+)
+model = K3ParallelModel(K3Config(), parallel)
+assert model.layer_indices == list(range(84, 93))
+```
+
+To request the balanced PP3 layout explicitly:
+
+```python
+rows = [
+    ["embedding", *(["decoder"] * 32)],
+    ["decoder"] * 32,
+    [*(["decoder"] * 29), "loss"],
+]
+parallel = ParallelState(
+    pp_size=3,
+    pp_rank=rank,
+    pp_is_first=rank == 0,
+    pp_is_last=rank == 2,
+    pp_layout=rows,
+)
+```
+
 ## Tutorial 5: save a public HF checkpoint
 
 `save_hf_weights` streams tensors into bounded safetensors shards.  It publishes
