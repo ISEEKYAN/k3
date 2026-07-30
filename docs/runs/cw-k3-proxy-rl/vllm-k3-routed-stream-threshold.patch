@@ -1,7 +1,7 @@
 diff --git a/vllm/models/kimi_k3/nvidia/model.py b/vllm/models/kimi_k3/nvidia/model.py
 --- a/vllm/models/kimi_k3/nvidia/model.py
 +++ b/vllm/models/kimi_k3/nvidia/model.py
-@@ -120,6 +120,12 @@ from ..common.mm_preprocess import (
+@@ -120,6 +120,11 @@ from ..common.mm_preprocess import (
  
  logger = init_logger(__name__)
  
@@ -13,7 +13,7 @@ diff --git a/vllm/models/kimi_k3/nvidia/model.py b/vllm/models/kimi_k3/nvidia/mo
  
  def _get_padded_moe_intermediate_size(
      moe_intermediate_size: int,
-@@ -662,7 +668,7 @@ class KimiMoE(nn.Module):
+@@ -662,7 +667,7 @@ class KimiMoE(nn.Module):
                  self._down_proj_events[0],
                  self._down_proj_events[1],
                  self._down_proj_stream
