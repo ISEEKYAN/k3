@@ -235,7 +235,7 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "export RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1" in runner
     assert (
         "++ray_kwargs.ray_init.runtime_env.env_vars."
-        "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1"
+        'RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=\\"1\\"'
     ) in runner
     assert 'python3 "${recipe_dir}/assert_ray_cuda_env.py"' in runner
     assert runner.index(
