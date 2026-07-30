@@ -55,9 +55,19 @@ def main() -> None:
 
     cuda_include = Path(os.environ["CUDA_HOME"]) / "targets/x86_64-linux/include"
     cudnn_include = Path(sysconfig.get_paths()["purelib"]) / "nvidia/cudnn/include"
-    nvtx_include = Path(sysconfig.get_paths()["purelib"]) / "nvidia/cu13/include"
+    nvtx_source_include = (
+        Path(sysconfig.get_paths()["purelib"]) / "nvidia/cu13/include"
+    )
     nccl_include = Path(sysconfig.get_paths()["purelib"]) / "nvidia/nccl/include"
     frontend_include = build_deps / "include"
+    nvtx_include = frontend_include
+    nvtx_source_dir = nvtx_source_include / "nvtx3"
+    if nvtx_source_dir.is_dir():
+        shutil.copytree(
+            nvtx_source_dir,
+            nvtx_include / "nvtx3",
+            dirs_exist_ok=True,
+        )
     header_groups = {
         "cuda_headers": (
             cuda_include,
@@ -118,6 +128,10 @@ def main() -> None:
         "gxx": command(os.environ.get("CXX", "g++"), "--version"),
         "nvcc": command("nvcc", "--version"),
         "nvidia-cudnn-frontend": distribution("nvidia-cudnn-frontend"),
+        "nvtx_source": {
+            "ok": nvtx_source_dir.is_dir(),
+            "value": str(nvtx_source_dir),
+        },
     }
     for name, (root, headers) in header_groups.items():
         missing = [header for header in headers if not (root / header).is_file()]

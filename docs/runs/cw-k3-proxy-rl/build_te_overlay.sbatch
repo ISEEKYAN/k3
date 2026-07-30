@@ -42,7 +42,8 @@ base_python_site=/usr/local/lib/python3.12/dist-packages
 base_cudnn_root="${base_python_site}/nvidia/cudnn"
 base_cuda_python_root="${base_python_site}/nvidia/cu13"
 base_nccl_root="${base_python_site}/nvidia/nccl"
-training_includes="${base_cudnn_root}/include:${base_cuda_python_root}/include:${base_nccl_root}/include"
+toolchain_include="${TE_OVERLAY}/cuda-toolchain/include"
+training_includes="${base_cudnn_root}/include:${toolchain_include}:${base_nccl_root}/include"
 export CPATH="${training_includes}${CPATH:+:${CPATH}}"
 export CPLUS_INCLUDE_PATH="${training_includes}${CPLUS_INCLUDE_PATH:+:${CPLUS_INCLUDE_PATH}}"
 export LD_LIBRARY_PATH="${CUDA_HOME}/compat:${CUDA_HOME}/targets/x86_64-linux/lib:${base_cudnn_root}/lib:${base_cuda_python_root}/lib:${base_nccl_root}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
@@ -82,6 +83,9 @@ echo "TE_BUILD_SOURCE_OK source=${te_build_source}"
   --no-deps \
   --target "${TE_OVERLAY}/cuda-toolchain" \
   -r "'"${recipe_dir}"'/te-build-requirements.txt"
+mkdir -p "${toolchain_include}"
+cp -a "${base_cuda_python_root}/include/nvtx3" "${toolchain_include}/"
+test -f "${toolchain_include}/nvtx3/nvToolsExt.h"
 export PYTHONPATH="${TE_OVERLAY}/cuda-toolchain"
 nvcc --version
 
