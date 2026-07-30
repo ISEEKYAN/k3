@@ -119,6 +119,20 @@ def test_training_base_probe_reuses_proven_pytorch_and_rollout_overlays():
     assert "pip install" not in probe
 
 
+def test_python_dev_header_probe_is_short_cpu_srun():
+    probe = read("probe_python_dev_headers.sbatch")
+
+    assert "#SBATCH --account=coreai_devtech_all" in probe
+    assert "#SBATCH --partition=cpu_short" in probe
+    assert "#SBATCH --time=00:05:00" in probe
+    assert '--container-image="${K3_TRAINING_IMAGE}"' in probe
+    assert "srun" in probe
+    assert "sysconfig.get_paths" in probe
+    assert "pyconfig.h" in probe
+    assert "Python.h" in probe
+    assert "pip install" not in probe
+
+
 def test_te_audit_uses_node_local_dependencies_and_reports_missing_git():
     sbatch = read("audit_te_build_env.sbatch")
     audit = read("audit_te_build_env.py")
