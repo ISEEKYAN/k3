@@ -314,6 +314,9 @@ def test_container_python_and_pruned_verl_site_fail_loud():
     assert 'importlib.metadata.version("pyvers")' not in validate
     assert "pyvers_version" not in validate
     assert "K3_RUNTIME_PACKAGE_PATHS_OK" in validate
+    assert "os.path.realpath(actual)" in validate
+    assert "os.path.realpath(expected_root) + os.sep" in validate
+    assert ".is_relative_to(" not in validate
     readme = read("README.md")
     assert "pyvers 0.2.2" in readme
     assert "pyvers<0.2.0" in readme
