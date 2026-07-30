@@ -199,6 +199,17 @@ parallelism, THD sequences, pipeline parallelism, and short training require
 K3-owned sharding, parameter placement, state-transfer, and communication work
 in this repository. They do not depend on a K3 primitive PR in Megatron Lite.
 
+`ModelBundle.extras["validated_axes"]` is derived only from the following
+machine-readable evidence manifest. Enabling a parallel dimension is not
+evidence. Every entry must name a public scheduler test ID; the runtime and
+this document are checked together and fail loudly if they drift.
+
+<!-- K3_VALIDATED_AXIS_EVIDENCE_BEGIN -->
+```json
+{}
+```
+<!-- K3_VALIDATED_AXIS_EVIDENCE_END -->
+
 Run from a clean checkout using a pinned container and Megatron Lite revision.
 Each selected test must execute rather than skip, complete forward and backward,
 and assert the requested topology and communication path. The minimum matrix is:
@@ -213,14 +224,12 @@ and assert the requested topology and communication path. The minimum matrix is:
 If a proxy topology is used, report it as proxy evidence. It must not be
 described as a full-scale Kimi K3 run.
 
-Reduced scheduler-backed proxies now cover one-rank parity, EP, CP, packed THD,
-combined CP+EP, and PP. The packed-THD CP proxy enters through the public
-`PackedBatch` protocol and asserts for CP1/2/4 that packing-aware partitioning
-happens exactly once, every rank receives the expected token order, and the CP
-group conserves every input token before completing forward and backward.
-Full-scale checkpoint training and a short optimizer-backed train remain
-deferred. FlashKDA direct dispatch is also not done; the approved training path
-is FLA `chunk_kda`.
+Scheduler-backed proxy tests exist for one-rank parity, EP, CP, packed THD,
+combined CP+EP, and PP, but they are not publication evidence until the unified
+matrix is rerun for the exact release commit and its public test IDs are added
+to the manifest above. Full-scale checkpoint training and a short
+optimizer-backed train remain deferred. FlashKDA direct dispatch is also not
+done; the approved training path is FLA `chunk_kda`.
 
 ## Evidence and publication rules
 

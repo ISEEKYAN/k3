@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -33,6 +35,14 @@ _K3_MXFP4_QAT_IGNORES = (
     "mlp_res_proj",
     "output_attn_res_proj",
 )
+_VALIDATION_AXES = ("tp", "ep", "etp", "pp", "cp", "thd")
+_VALIDATED_AXIS_EVIDENCE: dict[str, tuple[str, ...]] = {}
+_VALIDATION_DOC_EVIDENCE = re.compile(
+    r"<!-- K3_VALIDATED_AXIS_EVIDENCE_BEGIN -->\s*"
+    r"```json\s*(\{.*?\})\s*```\s*"
+    r"<!-- K3_VALIDATED_AXIS_EVIDENCE_END -->",
+    re.DOTALL,
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +69,59 @@ def _parallel_size(parallel: Any, name: str) -> int:
         return 1
     value = getattr(parallel, name, 1)
     return 1 if value is None else int(value)
+
+
+def _resolve_validated_axes(
+    dimensions: dict[str, int],
+    *,
+    use_thd: bool,
+) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    unknown = sorted(set(_VALIDATED_AXIS_EVIDENCE) - set(_VALIDATION_AXES))
+    missing_sources = sorted(
+        axis for axis, sources in _VALIDATED_AXIS_EVIDENCE.items() if not sources
+    )
+    invalid_sources = sorted(
+        f"{axis}:{source}"
+        for axis, sources in _VALIDATED_AXIS_EVIDENCE.items()
+        for source in sources
+        if not source.startswith("test:")
+    )
+    if unknown or missing_sources or invalid_sources:
+        raise RuntimeError(
+            "invalid K3 validation evidence: "
+            f"unknown_axes={unknown}, missing_sources={missing_sources}, "
+            f"invalid_sources={invalid_sources}"
+        )
+
+    active = {
+        axis
+        for axis, size in dimensions.items()
+        if axis in _VALIDATION_AXES and size > 1
+    }
+    if use_thd:
+        active.add("thd")
+    evidence = {
+        axis: _VALIDATED_AXIS_EVIDENCE[axis]
+        for axis in _VALIDATION_AXES
+        if axis in active and axis in _VALIDATED_AXIS_EVIDENCE
+    }
+    return tuple(evidence), evidence
+
+
+def _assert_validation_doc_contract(contents: str) -> None:
+    match = _VALIDATION_DOC_EVIDENCE.search(contents)
+    if match is None:
+        raise RuntimeError("docs/validation.md is missing validated-axis evidence")
+    raw = json.loads(match.group(1))
+    documented = {
+        str(axis): tuple(str(source) for source in sources)
+        for axis, sources in raw.items()
+    }
+    if documented != _VALIDATED_AXIS_EVIDENCE:
+        raise RuntimeError(
+            "validated-axis evidence drift: "
+            f"runtime={_VALIDATED_AXIS_EVIDENCE}, docs={documented}"
+        )
 
 
 def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
@@ -144,9 +207,10 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
         )
     qat_stats = apply_qat_to_chunks(chunks, qat_spec)
 
-    validated_axes = tuple(name for name, size in dimensions.items() if size > 1)
-    if impl_cfg.use_thd:
-        validated_axes += ("thd",)
+    validated_axes, validation_evidence = _resolve_validated_axes(
+        dimensions,
+        use_thd=impl_cfg.use_thd,
+    )
     return ModelBundle(
         chunks=chunks,
         parallel_state=ps,
@@ -155,6 +219,7 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
             "model_cfg": model_cfg,
             "validated_scope": validated_scope,
             "validated_axes": validated_axes,
+            "validation_evidence": validation_evidence,
             "qat": qat_stats,
         },
     )
@@ -164,10 +229,36 @@ def vocab_size(model_cfg: K3Config) -> int:
     return model_cfg.vocab_size
 
 
+def load_hf_weights(
+    chunk: torch.nn.Module,
+    hf_path: str,
+    model_cfg: K3Config,
+    ps: Any,
+):
+    """Load a public K3 checkpoint through the shared HFWeights primitive."""
+    from mlite_k3.lite.checkpoint import load_hf_weights as load_impl
+
+    return load_impl(chunk, hf_path, model_cfg, ps)
+
+
+def export_hf_weights(
+    chunks: list[torch.nn.Module],
+    model_cfg: K3Config,
+    ps: Any,
+    **kwargs,
+):
+    """Export gathered public K3 weights through the shared HF primitive."""
+    from mlite_k3.lite.checkpoint import export_hf_weights as export_impl
+
+    yield from export_impl(chunks, model_cfg, ps, **kwargs)
+
+
 __all__ = [
     "ImplConfig",
     "build_model",
     "build_model_config",
+    "export_hf_weights",
+    "load_hf_weights",
     "pack_r3_replay_mask",
     "pack_routed_experts",
     "router_replay_roots",

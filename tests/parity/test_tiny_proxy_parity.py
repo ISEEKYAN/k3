@@ -6,23 +6,8 @@ import torch
 import torch.nn.functional as F
 
 from mlite_k3.config import K3Config
-from mlite_k3.lite.checkpoint import (
-    K3WeightSpec,
-    audit_k3_weight_spec_sources,
-    iter_hf_weights,
-    load_weights_from_reader,
-)
 from mlite_k3.lite.protocol import ImplConfig, build_model, build_model_config
 from mlite_k3.model import K3Model
-
-
-class _Reader:
-    def __init__(self, tensors: dict[str, torch.Tensor]):
-        self._tensors = tensors
-        self.index = set(tensors)
-
-    def get_tensor(self, name: str) -> torch.Tensor:
-        return self._tensors[name]
 
 
 def _tiny_config() -> K3Config:
@@ -88,51 +73,6 @@ def _tiny_hf_config() -> dict:
 
 def _linear(x: torch.Tensor, module) -> torch.Tensor:
     return F.linear(x, module.weight, module.bias)
-
-
-def _pack_mxfp4_reference(tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    block_size = 32
-    if tensor.shape[-1] % block_size:
-        raise ValueError("tiny MXFP4 source width must be divisible by 32")
-    source = tensor.float()
-    blocks = source.reshape(*source.shape[:-1], -1, block_size)
-    floor = 6.0 * (2.0**-126)
-    exponent = torch.ceil(
-        torch.log2(blocks.abs().amax(dim=-1).clamp_min(floor) / 6.0)
-    ).clamp(-127, 127)
-    scale = torch.exp2(exponent)
-    normalized = blocks / scale.unsqueeze(-1)
-    magnitude = normalized.abs()
-    codes = torch.zeros_like(magnitude, dtype=torch.uint8)
-    for boundary in (0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0):
-        codes += (magnitude > boundary).to(torch.uint8)
-    for upper_even_boundary in (0.75, 1.75, 3.5):
-        codes += (magnitude == upper_even_boundary).to(torch.uint8)
-    codes |= torch.where(
-        normalized.signbit(),
-        torch.tensor(8, device=normalized.device),
-        0,
-    ).to(torch.uint8)
-    codes = codes.reshape(*source.shape[:-1], source.shape[-1])
-    packed = codes[..., 0::2] | (codes[..., 1::2] << 4)
-    encoded_scale = (exponent + 127).to(torch.uint8)
-    return packed.contiguous(), encoded_scale.contiguous()
-
-
-def _quantized_release_reader(
-    hf_weights: dict[str, torch.Tensor],
-) -> tuple[_Reader, int]:
-    release = {}
-    quantized = 0
-    for name, tensor in hf_weights.items():
-        if ".experts." not in name:
-            release[name] = tensor
-            continue
-        packed, scale = _pack_mxfp4_reference(tensor)
-        release[f"{name}_packed"] = packed
-        release[f"{name}_scale"] = scale
-        quantized += 1
-    return _Reader(release), quantized
 
 
 def _rms_norm(x: torch.Tensor, module) -> torch.Tensor:
@@ -336,18 +276,6 @@ def test_tiny_hybrid_proxy_matches_independent_layerwise_reference():
     config = build_model_config(_tiny_hf_config())
     assert config.layer_types == ["kda", "mla"]
     reference = K3Model(config)
-    spec = K3WeightSpec(config)
-    hf_weights = {
-        name: tensor.clone() for name, tensor in iter_hf_weights(reference, spec)
-    }
-    bias_name = (
-        "language_model.model.layers.1.block_sparse_moe.gate.e_score_correction_bias"
-    )
-    hf_weights[bias_name] = torch.tensor([-0.3, -0.1, 0.1, 0.3])
-    reader, quantized = _quantized_release_reader(hf_weights)
-    assert quantized == config.num_experts * 3
-    assert audit_k3_weight_spec_sources(spec, reader.index) == len(hf_weights)
-    reference_loaded = load_weights_from_reader(reference, reader, spec)
     torch.manual_seed(20260728)
     bundle = build_model(
         config,
@@ -355,15 +283,7 @@ def test_tiny_hybrid_proxy_matches_independent_layerwise_reference():
     )
     actual = bundle.chunks[0]
     assert not torch.equal(actual.embed_tokens.weight, reference.embed_tokens.weight)
-    loaded = load_weights_from_reader(actual, reader, spec)
-    assert reference_loaded == len(reference.state_dict())
-    assert loaded == len(actual.state_dict())
-    assert spec.weight_map()["layers.1.moe.router.expert_bias"] == [bias_name]
-    assert "layers.1.moe.expert_bias" in actual.state_dict()
-    torch.testing.assert_close(
-        actual.layers[1].moe.expert_bias,
-        hf_weights[bias_name],
-    )
+    actual.load_state_dict(reference.state_dict())
     input_ids = torch.tensor([[1, 2, 3, 4], [4, 3, 2, 1]])
     labels = torch.tensor([[2, 3, 4, 5], [3, 2, 1, 0]])
 

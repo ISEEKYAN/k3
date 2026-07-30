@@ -1,21 +1,37 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 import torch
 import torch.nn as nn
 
+import mlite_k3.lite.checkpoint as checkpoint
 from mlite_k3.lite.checkpoint import (
+    K3CheckpointManifest,
+    K3QuantizationMetadata,
     K3WeightSpec,
+    WeightIndexAudit,
     audit_k3_weight_spec_sources,
     audit_k3_weight_index,
+    export_hf_weights,
     get_hf_weight,
-    iter_hf_weights,
     save_hf_weights,
-    load_weights_from_reader,
     parse_k3_quantization_metadata,
 )
+
+
+def _single_rank_parallel_state():
+    return SimpleNamespace(
+        pp_size=1,
+        tp_size=1,
+        tp_group=None,
+        ep_size=1,
+        ep_group=None,
+        etp_size=1,
+        etp_group=None,
+    )
 
 
 class _Reader:
@@ -253,6 +269,7 @@ class _TinyConfig:
     num_hidden_layers = 2
     first_k_dense_replace = 1
     num_experts = 1
+    vocab_size = 64
 
     @staticmethod
     def attention_type(layer_index: int) -> str:
@@ -262,35 +279,194 @@ class _TinyConfig:
 def test_k3_weight_spec_covers_text_backbone_with_k3_specific_expert_names():
     mapping = K3WeightSpec(_TinyConfig()).weight_map()
 
-    assert mapping["embed_tokens.weight"] == [
+    assert mapping["embed_tokens.embedding.weight"] == [
         "language_model.model.embed_tokens.weight"
     ]
-    assert mapping["layers.0.self_attention.q_conv1d.conv.weight"] == [
+    assert mapping["lm_head.col.linear.weight"] == ["language_model.lm_head.weight"]
+    assert mapping["layers.0.self_attention.q_proj.linear.weight"] == [
+        "language_model.model.layers.0.self_attn.q_proj.weight"
+    ]
+    assert mapping["layers.0.self_attention.q_conv1d.weight"] == [
         "language_model.model.layers.0.self_attn.q_conv1d.weight"
     ]
-    assert mapping["layers.1.self_attention.q_a_proj.weight"] == [
+    assert mapping["layers.1.self_attention.linear_q_down_proj.weight"] == [
         "language_model.model.layers.1.self_attn.q_a_proj.weight"
     ]
-    assert mapping["layers.1.moe.experts.0.gate_up.weight"] == [
+    assert mapping["layers.1.self_attention.linear_q_up_proj.linear.weight"] == [
+        "language_model.model.layers.1.self_attn.q_b_proj.weight"
+    ]
+    assert mapping["layers.1.moe.experts.fc1.weight0"] == [
         "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight",
         "language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight",
     ]
-    assert mapping["layers.1.moe.experts.0.down.weight"] == [
+    assert mapping["layers.1.moe.experts.fc2.weight0"] == [
         "language_model.model.layers.1.block_sparse_moe.experts.0.w2.weight"
     ]
     assert not any("vision" in name for names in mapping.values() for name in names)
 
 
-def test_k3_weight_spec_fuses_gate_up_and_preserves_public_conv_layout():
+def test_k3_weight_spec_implements_hf_weights_parallel_contract():
+    from megatron.lite.primitive.ckpt.hf_weights import HFWeights
+
+    spec = K3WeightSpec(_TinyConfig())
+
+    assert isinstance(spec, HFWeights)
+    assert spec.num_experts == 1
+    assert spec.qkv_spec("anything") is None
+    assert spec.tp_spec("embed_tokens.embedding.weight") == (0, 0)
+    assert spec.tp_spec("lm_head.col.linear.weight") == (0, 0)
+    for suffix in (
+        "q_proj.linear.weight",
+        "k_proj.linear.weight",
+        "v_proj.linear.weight",
+        "f_b_proj.linear.weight",
+        "b_proj.linear.weight",
+        "g_proj.linear.weight",
+        "q_conv1d.weight",
+        "k_conv1d.weight",
+        "v_conv1d.weight",
+        "A_log",
+        "dt_bias",
+    ):
+        assert spec.tp_spec(f"layers.0.self_attention.{suffix}") == (0, 0)
+    assert spec.tp_spec("layers.0.self_attention.o_proj.linear.weight") == (1, 0)
+    assert spec.tp_spec("layers.1.self_attention.linear_q_up_proj.linear.weight") == (
+        0,
+        0,
+    )
+    assert spec.tp_spec("layers.1.self_attention.linear_kv_up_proj.linear.weight") == (
+        0,
+        0,
+    )
+    assert spec.tp_spec("layers.1.self_attention.linear_g_proj.linear.weight") == (
+        0,
+        0,
+    )
+    assert spec.tp_spec("layers.1.self_attention.linear_proj.linear.weight") == (
+        1,
+        0,
+    )
+    assert spec.tp_spec("layers.1.moe.experts.fc1.weight0") == (0, 1)
+    assert spec.tp_spec("layers.1.moe.experts.fc2.weight0") == (1, 1)
+    assert spec.tp_spec("layers.1.moe.router.gate.weight") is None
+
+    expert = "layers.1.moe.experts.fc1.weight0"
+    assert spec.is_expert(expert)
+    assert spec.expert_global_id(expert) == 0
+    assert spec.expert_local_name(expert, 3) == "layers.1.moe.experts.fc1.weight3"
+    assert spec.weight_map()["layers.1.moe.router.expert_bias"] == [
+        "language_model.model.layers.1.block_sparse_moe.gate.e_score_correction_bias"
+    ]
+
+
+def test_k3_weight_spec_materializes_mxfp4_sources_from_manifest():
+    manifest = K3CheckpointManifest(
+        quantization=K3QuantizationMetadata(
+            format="mxfp4-pack-quantized",
+            group_size=32,
+            num_bits=4,
+            scale_dtype="torch.uint8",
+            ignored_modules=frozenset(),
+        ),
+        weights=WeightIndexAudit(quantized_weights=3, plain_tensors=0, shards=1),
+    )
+    spec = K3WeightSpec(_TinyConfig(), manifest=manifest)
+    native = "layers.1.moe.experts.fc1.weight0"
+    sources = spec.weight_map()[native]
+
+    assert sources == [
+        "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_packed",
+        "language_model.model.layers.1.block_sparse_moe.experts.0.w1.weight_scale",
+        "language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight_packed",
+        "language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight_scale",
+    ]
+
+    packed = torch.zeros(2, 16, dtype=torch.uint8)
+    scale = torch.full((2, 1), 127, dtype=torch.uint8)
+    materialized = spec.hf_to_native(native, [packed, scale, packed, scale])
+
+    assert materialized.shape == (4, 32)
+    assert materialized.dtype == torch.float32
+
+
+def test_k3_load_delegates_to_shared_hfweights_primitive(monkeypatch):
+    manifest = K3CheckpointManifest(
+        quantization=K3QuantizationMetadata(
+            format="mxfp4-pack-quantized",
+            group_size=32,
+            num_bits=4,
+            scale_dtype="torch.uint8",
+            ignored_modules=frozenset(),
+        ),
+        weights=WeightIndexAudit(quantized_weights=3, plain_tensors=0, shards=1),
+    )
+    calls = []
+
+    class Reader:
+        def __init__(self, path):
+            assert path == "checkpoint"
+            self.index = {}
+
+    monkeypatch.setattr(checkpoint, "inspect_hf_checkpoint", lambda path: manifest)
+    monkeypatch.setattr(
+        checkpoint, "audit_k3_weight_spec_sources", lambda spec, index: 0
+    )
+    monkeypatch.setattr(
+        "megatron.lite.primitive.ckpt.hf_weights.SafeTensorReader",
+        Reader,
+    )
+    monkeypatch.setattr(
+        "megatron.lite.primitive.ckpt.hf_weights.load_hf_weights",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    model = nn.Module()
+    ps = object()
+
+    result = checkpoint.load_hf_weights(model, "checkpoint", _TinyConfig(), ps)
+
+    assert result is manifest
+    args, kwargs = calls.pop()
+    assert args[0] is model
+    assert args[1] == "checkpoint"
+    assert isinstance(args[2], K3WeightSpec)
+    assert args[2].manifest is manifest
+    assert args[3] is ps
+    assert kwargs == {"vocab_size": 64}
+
+
+def test_k3_export_delegates_to_shared_hfweights_primitive(monkeypatch):
+    calls = []
+    sentinel = torch.tensor([1.0])
+
+    def fake_export(*args, **kwargs):
+        calls.append((args, kwargs))
+        yield "language_model.model.norm.weight", sentinel
+
+    monkeypatch.setattr(
+        "megatron.lite.primitive.ckpt.hf_weights.export_hf_weights",
+        fake_export,
+    )
+    model = nn.Module()
+    ps = object()
+
+    exported = list(export_hf_weights(model, _TinyConfig(), ps))
+
+    assert exported == [("language_model.model.norm.weight", sentinel)]
+    args, kwargs = calls.pop()
+    assert args[0] is model
+    assert isinstance(args[1], K3WeightSpec)
+    assert args[2] is ps
+    assert kwargs == {"vocab_size": 64}
+
+
+def test_k3_weight_spec_applies_only_the_two_required_layout_transforms():
     spec = K3WeightSpec(_TinyConfig())
     gate = torch.randn(3, 4)
     up = torch.randn(3, 4)
     conv = torch.randn(4, 1, 3)
 
-    fused = spec.hf_to_native("layers.1.moe.experts.0.gate_up.weight", [gate, up])
-    preserved = spec.hf_to_native(
-        "layers.0.self_attention.q_conv1d.conv.weight", [conv]
-    )
+    fused = spec.hf_to_native("layers.1.moe.experts.fc1.weight0", [gate, up])
+    preserved = spec.hf_to_native("layers.0.self_attention.q_conv1d.weight", [conv])
 
     assert torch.equal(fused, torch.cat((gate, up), dim=0))
     assert preserved.shape == (4, 1, 3)
@@ -321,7 +497,7 @@ def test_k3_weight_spec_roundtrips_dequantized_expert_layout():
     spec = K3WeightSpec(_TinyConfig())
     gate = torch.randn(3, 32, dtype=torch.bfloat16)
     up = torch.randn(3, 32, dtype=torch.bfloat16)
-    native_name = "layers.1.moe.experts.0.gate_up.weight"
+    native_name = "layers.1.moe.experts.fc1.weight0"
 
     native = spec.hf_to_native(native_name, [gate, up])
     restored = dict(spec.native_to_hf(native_name, native))
@@ -336,16 +512,30 @@ def test_k3_weight_spec_roundtrips_dequantized_expert_layout():
     )
 
 
-class _TinyExpert(nn.Module):
+class _TinyGroupedLinear(nn.Module):
     def __init__(self):
         super().__init__()
-        self.gate_up = nn.Linear(32, 6, bias=False, dtype=torch.bfloat16)
+        self.register_parameter(
+            "weight0",
+            nn.Parameter(torch.randn(6, 32, dtype=torch.bfloat16)),
+        )
+
+
+class _TinyExperts(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.fc1 = _TinyGroupedLinear()
+
+
+class _TinyRouter(nn.Module):
+    pass
 
 
 class _TinyMoe(nn.Module):
     def __init__(self):
         super().__init__()
-        self.experts = nn.ModuleList([_TinyExpert()])
+        self.experts = _TinyExperts()
+        self.router = _TinyRouter()
 
 
 class _TinyLayer(nn.Module):
@@ -371,70 +561,14 @@ class _ExpertConfig:
         return "kda"
 
 
-def test_streaming_loader_dequantizes_and_copies_one_tiny_expert():
-    low_codes = torch.tensor([0, 2, 4, 6, 8, 10, 12, 14], dtype=torch.uint8)
-    high_codes = torch.tensor([1, 3, 5, 7, 9, 11, 13, 15], dtype=torch.uint8)
-    packed_row = (low_codes | (high_codes << 4)).repeat(2)
-    packed = packed_row.repeat(3, 1)
-    scale = torch.full((3, 1), 127, dtype=torch.uint8)
-    prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
-    reader = _Reader(
-        {
-            f"{prefix}.w1.weight_packed": packed,
-            f"{prefix}.w1.weight_scale": scale,
-            f"{prefix}.w3.weight_packed": packed ^ 0x88,
-            f"{prefix}.w3.weight_scale": scale,
-        }
-    )
-    model = _TinyExpertModel()
-
-    loaded = load_weights_from_reader(model, reader, K3WeightSpec(_ExpertConfig()))
-
-    expected_gate = _independent_mxfp4_reference(packed, scale)
-    expected_up = _independent_mxfp4_reference(packed ^ 0x88, scale)
-    assert loaded == 1
-    assert torch.equal(
-        model.layers[0].moe.experts[0].gate_up.weight.float(),
-        torch.cat((expected_gate, expected_up), dim=0),
-    )
-
-
-def test_tiny_mxfp4_load_plain_bf16_export_and_reload_is_bitwise():
-    low_codes = torch.tensor([0, 2, 4, 6, 8, 10, 12, 14], dtype=torch.uint8)
-    high_codes = torch.tensor([1, 3, 5, 7, 9, 11, 13, 15], dtype=torch.uint8)
-    packed = (low_codes | (high_codes << 4)).repeat(3, 2)
-    scale = torch.full((3, 1), 127, dtype=torch.uint8)
-    prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
-    quantized = _Reader(
-        {
-            f"{prefix}.w1.weight_packed": packed,
-            f"{prefix}.w1.weight_scale": scale,
-            f"{prefix}.w3.weight_packed": packed ^ 0x88,
-            f"{prefix}.w3.weight_scale": scale,
-        }
-    )
-    spec = K3WeightSpec(_ExpertConfig())
-    first = _TinyExpertModel()
-    second = _TinyExpertModel()
-
-    load_weights_from_reader(first, quantized, spec)
-    plain_bf16 = dict(iter_hf_weights(first, spec))
-    load_weights_from_reader(second, _Reader(plain_bf16), spec)
-
-    assert set(plain_bf16) == {f"{prefix}.w1.weight", f"{prefix}.w3.weight"}
-    assert all(tensor.dtype == torch.bfloat16 for tensor in plain_bf16.values())
-    assert torch.equal(
-        first.layers[0].moe.experts[0].gate_up.weight,
-        second.layers[0].moe.experts[0].gate_up.weight,
-    )
-
-
 def test_mxfp4_resync_export_only_packs_routed_expert_weights():
-    spec = K3WeightSpec(_ExpertConfig())
-    model = _TinyExpertModel()
     prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
+    weights = [
+        (f"{prefix}.w1.weight", torch.randn(3, 32, dtype=torch.bfloat16)),
+        (f"{prefix}.w3.weight", torch.randn(3, 32, dtype=torch.bfloat16)),
+    ]
 
-    exported = dict(iter_hf_weights(model, spec, target="mxfp4"))
+    exported = dict(checkpoint._export_mxfp4_weights(iter(weights)))
 
     assert set(exported) == {
         f"{prefix}.w1.weight_packed",
@@ -447,18 +581,38 @@ def test_mxfp4_resync_export_only_packs_routed_expert_weights():
 
 
 @pytest.mark.parametrize("target", ("bf16", "mxfp4"))
-def test_save_hf_weights_writes_shards_and_roundtrips_real_files(tmp_path, target):
+def test_save_hf_weights_writes_shards_and_roundtrips_real_files(
+    tmp_path, target, monkeypatch
+):
     from megatron.lite.primitive.ckpt.hf_weights import SafeTensorReader
 
     source = _TinyExpertModel()
-    source.layers[0].moe.register_buffer(
+    source.layers[0].moe.router.register_buffer(
         "expert_bias", torch.tensor([0.25], dtype=torch.float32)
     )
     spec = K3WeightSpec(_ExpertConfig())
+    native = source.layers[0].moe.experts.fc1.weight0.detach().cpu()
+    exported = spec.native_to_hf("layers.0.moe.experts.fc1.weight0", native)
+    exported.append(
+        (
+            "language_model.model.layers.0.block_sparse_moe.gate."
+            "e_score_correction_bias",
+            source.layers[0].moe.router.expert_bias,
+        )
+    )
+
+    def fake_export(*_args, **_kwargs):
+        weights = iter(exported)
+        yield from (
+            checkpoint._export_mxfp4_weights(weights) if target == "mxfp4" else weights
+        )
+
+    monkeypatch.setattr(checkpoint, "export_hf_weights", fake_export)
     summary = save_hf_weights(
         source,
         tmp_path,
         _ExpertConfig(),
+        _single_rank_parallel_state(),
         target=target,
         max_shard_size_bytes=64,
     )
@@ -481,68 +635,21 @@ def test_save_hf_weights_writes_shards_and_roundtrips_real_files(tmp_path, targe
                     == filename
                 )
 
-    restored = _TinyExpertModel()
-    restored.layers[0].moe.register_buffer(
-        "expert_bias", torch.zeros(1, dtype=torch.float32)
-    )
     reader = SafeTensorReader(str(tmp_path))
-    assert load_weights_from_reader(restored, reader, spec) == len(
-        restored.state_dict()
-    )
-    assert torch.equal(
-        restored.layers[0].moe.expert_bias, source.layers[0].moe.expert_bias
-    )
+    prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
     if target == "bf16":
-        for actual, expected in zip(
-            restored.state_dict().values(), source.state_dict().values(), strict=True
-        ):
-            assert torch.equal(actual, expected)
-
-
-def test_qat_parametrized_checkpoint_load_and_export_use_logical_weight_names():
-    from megatron.lite.primitive.quantization.qat import (
-        QATSpec,
-        apply_qat_to_chunks,
-    )
-
-    model = _TinyExpertModel()
-    assert apply_qat_to_chunks([model], QATSpec(enabled=True, format="mxfp4")) == {
-        "quantized_modules": 1,
-        "skipped_ignored": 0,
-        "skipped_no_weight": 0,
-    }
-    spec = K3WeightSpec(_ExpertConfig())
-    prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
-    source = {
-        f"{prefix}.w1.weight": torch.randn(3, 32, dtype=torch.bfloat16),
-        f"{prefix}.w3.weight": torch.randn(3, 32, dtype=torch.bfloat16),
-    }
-
-    assert load_weights_from_reader(model, _Reader(source), spec) == 1
-    exported = dict(iter_hf_weights(model, spec))
-
-    assert torch.equal(exported[f"{prefix}.w1.weight"], source[f"{prefix}.w1.weight"])
-    assert torch.equal(exported[f"{prefix}.w3.weight"], source[f"{prefix}.w3.weight"])
-
-
-def test_streaming_loader_fails_on_unmapped_native_parameter():
-    model = nn.Module()
-    model.register_parameter("unexpected", nn.Parameter(torch.zeros(1)))
-
-    with pytest.raises(KeyError, match="no K3 checkpoint mapping"):
-        load_weights_from_reader(model, _Reader({}), K3WeightSpec(_ExpertConfig()))
-
-
-def test_streaming_loader_fails_on_wrong_checkpoint_shape():
-    prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
-    reader = _Reader(
-        {
-            f"{prefix}.w1.weight": torch.zeros(3, 16),
-            f"{prefix}.w3.weight": torch.zeros(3, 16),
-        }
-    )
-
-    with pytest.raises(ValueError, match="shape mismatch"):
-        load_weights_from_reader(
-            _TinyExpertModel(), reader, K3WeightSpec(_ExpertConfig())
+        native = spec.hf_to_native(
+            "layers.0.moe.experts.fc1.weight0",
+            [
+                reader.get_tensor(f"{prefix}.w1.weight"),
+                reader.get_tensor(f"{prefix}.w3.weight"),
+            ],
         )
+        assert torch.equal(native, source.layers[0].moe.experts.fc1.weight0)
+    assert torch.equal(
+        reader.get_tensor(
+            "language_model.model.layers.0.block_sparse_moe.gate."
+            "e_score_correction_bias"
+        ),
+        source.layers[0].moe.router.expert_bias.to(torch.bfloat16),
+    )

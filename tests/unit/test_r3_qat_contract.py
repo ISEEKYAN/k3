@@ -125,6 +125,44 @@ def test_disabled_qat_is_inert():
     assert bundle.extras["qat"]["quantized_modules"] == 0
 
 
+def test_unproven_ep_axis_is_not_reported_as_validated():
+    dimensions = {"tp": 1, "ep": 2, "etp": 1, "pp": 1, "cp": 1}
+
+    axes, evidence = protocol._resolve_validated_axes(
+        dimensions,
+        use_thd=False,
+    )
+
+    assert axes == ()
+    assert evidence == {}
+
+
+def test_validation_stage_evidence_cannot_drift_from_runtime_contract():
+    from pathlib import Path
+
+    validation_doc = (Path(__file__).parents[2] / "docs/validation.md").read_text(
+        encoding="utf-8"
+    )
+
+    protocol._assert_validation_doc_contract(validation_doc)
+
+
+def test_validation_stage_evidence_drift_fails_loudly():
+    from pathlib import Path
+
+    validation_doc = (Path(__file__).parents[2] / "docs/validation.md").read_text(
+        encoding="utf-8"
+    )
+    drifted = validation_doc.replace(
+        "```json\n{}\n```",
+        '```json\n{"ep": ["test:tests/gpu/fake.py::test_fake"]}\n```',
+        1,
+    )
+
+    with pytest.raises(RuntimeError, match="validated-axis evidence drift"):
+        protocol._assert_validation_doc_contract(drifted)
+
+
 def test_dense_bundle_forwards_mask_into_cp_permuted_loss():
     bundle = build_model(
         _tiny_config(),

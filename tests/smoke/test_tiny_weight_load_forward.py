@@ -3,17 +3,7 @@ from __future__ import annotations
 import torch
 
 from mlite_k3.config import K3Config
-from mlite_k3.lite.checkpoint import K3WeightSpec, load_weights_from_reader
 from mlite_k3.model import K3Model
-
-
-class _Reader:
-    def __init__(self, tensors: dict[str, torch.Tensor]) -> None:
-        self._tensors = tensors
-        self.index = set(tensors)
-
-    def get_tensor(self, name: str) -> torch.Tensor:
-        return self._tensors[name]
 
 
 def _tiny_config() -> K3Config:
@@ -45,42 +35,10 @@ def _tiny_config() -> K3Config:
     )
 
 
-def _deterministic_hf_reader(
-    model: K3Model,
-    spec: K3WeightSpec,
-) -> _Reader:
-    tensors: dict[str, torch.Tensor] = {}
-    mapping = spec.weight_map()
-    named_tensors = list(model.named_parameters()) + list(model.named_buffers())
-    for offset, (native_name, parameter) in enumerate(named_tensors):
-        source_names = mapping[native_name]
-        values = torch.linspace(
-            -0.02 + offset * 1e-5,
-            0.02 + offset * 1e-5,
-            parameter.numel(),
-            dtype=torch.float32,
-        ).reshape(parameter.shape)
-        if native_name.endswith(".gate_up.weight"):
-            source_values = values.chunk(2, dim=0)
-        else:
-            source_values = (values,)
-        tensors.update(zip(source_names, source_values, strict=True))
-    return _Reader(tensors)
-
-
-def test_complete_tiny_weight_spec_load_runs_hybrid_forward_backward():
+def test_complete_tiny_model_runs_hybrid_forward_backward():
     torch.manual_seed(7)
     config = _tiny_config()
     model = K3Model(config)
-    spec = K3WeightSpec(config)
-    reader = _deterministic_hf_reader(model, spec)
-
-    loaded = load_weights_from_reader(model, reader, spec)
-
-    assert loaded == len(model.state_dict())
-    assert reader.index == {
-        name for names in spec.weight_map().values() for name in names
-    }
     output = model(
         input_ids=torch.tensor([[1, 2, 3, 4], [4, 3, 2, 1]]),
         labels=torch.tensor([[2, 3, 4, 5], [3, 2, 1, 0]]),
