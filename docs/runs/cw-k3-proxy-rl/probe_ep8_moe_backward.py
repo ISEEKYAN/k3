@@ -16,7 +16,7 @@ from mlite_k3.lite.model import ParallelLatentMoE
 from mlite_k3.lite.protocol import build_model_config
 
 
-def mark(rank: int, phase: str) -> None:
+def mark(rank: int, phase: str, **details: int) -> None:
     print(
         "K3_EP8_MOE_PHASE="
         + json.dumps(
@@ -24,6 +24,7 @@ def mark(rank: int, phase: str) -> None:
                 "rank": rank,
                 "phase": phase,
                 "time": datetime.datetime.now(datetime.UTC).isoformat(),
+                **details,
             },
             sort_keys=True,
         ),
@@ -38,6 +39,11 @@ def finite_sample(tensor: torch.Tensor | None) -> bool:
     return bool(torch.isfinite(flat[: min(4096, flat.numel())]).all())
 
 
+def mark_backward_entry(rank: int, layer: int, grad: torch.Tensor) -> torch.Tensor:
+    mark(rank, "backward_layer_enter", layer=layer)
+    return grad
+
+
 @record
 def main() -> None:
     dist.init_process_group("nccl")
@@ -49,11 +55,19 @@ def main() -> None:
     device = torch.device("cuda", local_rank)
     ps = init_parallel(ParallelConfig(tp=1, ep=8, etp=1, pp=1, cp=1))
     config = build_model_config(os.environ["MODEL_PATH"])
+    layers = int(os.environ.get("MOE_LAYERS", "1"))
+    if not 1 <= layers <= 3:
+        raise RuntimeError(f"MOE_LAYERS must be in [1, 3], got {layers}")
 
     mark(rank, "build_start")
-    module = ParallelLatentMoE(config, ps).to(
-        device=device,
-        dtype=torch.bfloat16,
+    modules = torch.nn.ModuleList(
+        [
+            ParallelLatentMoE(config, ps).to(
+                device=device,
+                dtype=torch.bfloat16,
+            )
+            for _ in range(layers)
+        ]
     )
     mark(rank, "build_done")
     generator = torch.Generator(device=device).manual_seed(20260730)
@@ -68,18 +82,28 @@ def main() -> None:
     )
 
     mark(rank, "forward_start")
-    output = module(hidden)
+    output = hidden
+    for layer, module in enumerate(modules):
+        output = module(output)
+        output.register_hook(
+            lambda grad, layer=layer: mark_backward_entry(rank, layer, grad)
+        )
+        mark(rank, "forward_layer_done", layer=layer)
     mark(rank, "forward_done")
     mark(rank, "backward_start")
     output.float().square().mean().backward()
     mark(rank, "backward_done")
 
-    router_parameter = next(module.router.parameters())
+    first_module = modules[0]
+    last_module = modules[-1]
+    router_parameter = next(first_module.router.parameters())
     samples = {
         "hidden": finite_sample(hidden.grad),
         "router": finite_sample(router_parameter.grad),
-        "down_proj": finite_sample(module.routed_expert_down_proj.weight.grad),
-        "up_proj": finite_sample(module.routed_expert_up_proj.weight.grad),
+        "first_down_proj": finite_sample(
+            first_module.routed_expert_down_proj.weight.grad
+        ),
+        "last_up_proj": finite_sample(last_module.routed_expert_up_proj.weight.grad),
     }
     if not all(samples.values()):
         raise RuntimeError(f"K3 EP8 MoE missing/non-finite gradient samples: {samples}")
@@ -92,6 +116,7 @@ def main() -> None:
                     "hidden_size": config.hidden_size,
                     "experts": config.num_experts,
                     "topk": config.num_experts_per_token,
+                    "layers": layers,
                     "gradient_samples": samples,
                 },
                 sort_keys=True,

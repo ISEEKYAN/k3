@@ -14,6 +14,11 @@ recipe_dir="${K3_RECIPE_DIR:-${SLURM_SUBMIT_DIR:-$(pwd -L)}}"
 # shellcheck source=image.env
 source "${recipe_dir}/image.env"
 : "${MODEL_PATH:?set MODEL_PATH to the 12-layer, 56-expert proxy checkpoint}"
+: "${MOE_LAYERS:=1}"
+if [[ ! "${MOE_LAYERS}" =~ ^[1-3]$ ]]; then
+  echo "FATAL MOE_LAYERS must be 1, 2, or 3; got ${MOE_LAYERS}" >&2
+  exit 64
+fi
 
 diagnose() {
   echo "K3_GPU_DIAG component=ep8_moe phase=$1 job=${SLURM_JOB_ID} time=$(date -Is)"
@@ -32,7 +37,7 @@ set +e
 srun \
   --container-image="${K3_TRAINING_IMAGE}" \
   --container-mounts=/lustre:/lustre \
-  --export=MODEL_PATH,K3_ROOT,MLITE_ROOT,VERL_ROOT,VERL_DEPS_SITE,K3_CACHE_ROOT \
+  --export=MODEL_PATH,MOE_LAYERS,K3_ROOT,MLITE_ROOT,VERL_ROOT,VERL_DEPS_SITE,K3_CACHE_ROOT \
   /bin/bash --noprofile --norc -c '
 set -euo pipefail
 source "'"${recipe_dir}"'/k3_training_env.sh"

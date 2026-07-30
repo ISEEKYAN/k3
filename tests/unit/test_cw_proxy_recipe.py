@@ -245,10 +245,12 @@ def test_kda_backward_probe_is_one_gpu_and_uses_production_shape():
     assert "#SBATCH --partition=interactive" in carrier
     assert "#SBATCH --gpus-per-node=1" in carrier
     assert "#SBATCH --time=00:10:00" in carrier
-    assert "--export=K3_ROOT,MLITE_ROOT,VERL_ROOT,VERL_DEPS_SITE,K3_CACHE_ROOT" in carrier
+    assert (
+        "--export=K3_ROOT,MLITE_ROOT,VERL_ROOT,VERL_DEPS_SITE,K3_CACHE_ROOT" in carrier
+    )
     assert "sleep 120" in carrier
     assert "sleep 180" in carrier
-    assert "backend=\"fla\"" in probe
+    assert 'backend="fla"' in probe
     assert "shape = (1, 16, 96, 128)" in probe
     assert '"backward_start"' in probe
     assert '"backward_done"' in probe
@@ -269,5 +271,17 @@ def test_ep8_moe_backward_probe_uses_one_production_shape_layer():
     assert "config.hidden_size" in probe
     assert '"backward_start"' in probe
     assert '"backward_done"' in probe
-    assert "next(module.router.parameters())" in probe
+    assert "next(first_module.router.parameters())" in probe
     assert "K3_EP8_MOE_BACKWARD_OK=" in probe
+
+
+def test_ep8_moe_backward_probe_can_isolate_multiple_layers():
+    carrier = read("probe_ep8_moe_backward.sbatch")
+    probe = read("probe_ep8_moe_backward.py")
+
+    assert "MOE_LAYERS" in carrier
+    assert "MOE_LAYERS" in probe
+    assert "torch.nn.ModuleList" in probe
+    assert '"forward_layer_done"' in probe
+    assert '"backward_layer_enter"' in probe
+    assert '"layers": layers' in probe
