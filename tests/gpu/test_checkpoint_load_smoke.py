@@ -305,7 +305,15 @@ def main() -> None:
                         + manifest.weights.plain_tensors
                     ),
                     "expert_bias_dtype": "torch.float32",
-                    "assertions": [],
+                    # This is deliberately one coverage cell per execution output:
+                    # the preceding check proves this exact persistent checkpoint
+                    # field was restored as finite FP32 state after the QAT load.
+                    "assertions": [
+                        {
+                            "cell": "router_expert_bias.load",
+                            "assertion": "expert_bias_is_finite_fp32",
+                        }
+                    ],
                     "axes": [
                         name
                         for name in ("tp", "ep", "etp", "pp", "cp")

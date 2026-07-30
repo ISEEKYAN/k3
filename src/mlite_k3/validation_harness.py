@@ -275,6 +275,11 @@ def _parse_test_report(stdout: Path, tier: ValidationTier) -> dict[str, Any]:
             f"reported assertions={raw_assertions!r}, axes={raw_axes!r}"
         )
     assertions = tuple((value["cell"], value["assertion"]) for value in raw_assertions)
+    if len(assertions) > 1:
+        raise RuntimeError(
+            "each execution output must bind exactly one assertion to one coverage "
+            f"cell, got {list(assertions)}"
+        )
     axes = tuple(dict.fromkeys(raw_axes))
     valid_capabilities = set(capability_cells())
     unknown_cells = sorted({cell for cell, _ in assertions} - valid_capabilities)

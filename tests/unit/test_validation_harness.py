@@ -120,6 +120,23 @@ def test_capabilities_are_derived_from_individual_assertion_records(tmp_path):
     assert set(evidence.axes) == {"ep"}
 
 
+def test_one_run_cannot_claim_multiple_coverage_cells(tmp_path):
+    run_dir = _completed_run(
+        tmp_path,
+        assertions=(
+            ("moe.export_bf16", "export_matches_baseline"),
+            ("router_expert_bias.load", "expert_bias_is_finite_fp32"),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="exactly one assertion"):
+        finalize_evidence_bundle(
+            [run_dir],
+            tmp_path / "evidence.json",
+            sacct_query=_completed_sacct,
+        )
+
+
 def test_smoke_without_cell_assertions_leaves_the_matrix_uncovered(tmp_path):
     run_dir = _completed_run(tmp_path, assertions=(), axes=("tp",))
     bundle_path = tmp_path / "evidence.json"
