@@ -98,8 +98,8 @@ def main() -> None:
     dist.init_process_group("nccl")
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    if world_size != 8:
-        raise RuntimeError("K3 checkpoint load smoke requires exactly 8 ranks")
+    if world_size not in (1, 8):
+        raise RuntimeError("K3 checkpoint load smoke requires one or eight ranks")
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
@@ -133,7 +133,11 @@ def main() -> None:
         )
     dist.barrier()
 
-    parallel = ParallelConfig(tp=2, ep=2, etp=1, pp=2, cp=1)
+    parallel = (
+        ParallelConfig(tp=1, ep=1, etp=1, pp=1, cp=1)
+        if world_size == 1
+        else ParallelConfig(tp=2, ep=2, etp=1, pp=2, cp=1)
+    )
     bundle = build_model(
         config,
         impl_cfg=ImplConfig(
@@ -177,7 +181,10 @@ def main() -> None:
             + json.dumps(
                 {
                     "world_size": world_size,
-                    "parallel": {"tp": 2, "ep": 2, "etp": 1, "pp": 2, "cp": 1},
+                    "parallel": {
+                        name: int(getattr(parallel, name))
+                        for name in ("tp", "ep", "etp", "pp", "cp")
+                    },
                     "rank_metrics": [value.cpu().tolist() for value in gathered],
                     "manifest_logical_tensors": (
                         manifest.weights.quantized_weights
