@@ -266,6 +266,10 @@ def test_proxy_generate_reuses_external_launcher_at_tp8_ep8():
     assert "--container-image=\"${K3_TRAINING_IMAGE}\"" in carrier
     assert "OMP_NUM_THREADS=1" in carrier
     assert "K3_VLLM_SITE" in carrier
+    assert "CC=/usr/bin/gcc" in carrier
+    assert "CXX=/usr/bin/g++" in carrier
+    assert "CPATH=/usr/include/x86_64-linux-gnu" in carrier
+    assert "LD_PRELOAD" not in carrier
     assert "K3_GENERATE_WANDB_URL" in driver
     assert 'assert int(os.environ["WORLD_SIZE"]) == 8' in driver
     assert "tensor_parallel_size=8" in driver

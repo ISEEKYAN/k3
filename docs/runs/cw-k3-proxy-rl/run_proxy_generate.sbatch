@@ -22,9 +22,12 @@ source "${recipe_dir}/image.env"
 unset RAY_ADDRESS
 export PYTHONNOUSERSITE=1
 export OMP_NUM_THREADS=1
+export PATH=/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
+export CPATH=/usr/include/x86_64-linux-gnu
 export PYTHONPATH="${K3_VLLM_SITE}"
 export LD_LIBRARY_PATH="/usr/local/lib/python3.12/dist-packages/torch/lib:/usr/local/lib/python3.12/dist-packages/torch_tensorrt/lib:/usr/local/cuda/compat/lib:/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:${K3_VLLM_SITE}/tvm_ffi/lib"
-export LD_PRELOAD=/usr/local/cuda/targets/x86_64-linux/lib/libcublasLt.so.13
 export XDG_CACHE_HOME="${K3_CACHE_ROOT}/vllm-generate/xdg"
 export VLLM_CACHE_ROOT="${K3_CACHE_ROOT}/vllm-generate/vllm"
 export VLLM_CONFIG_ROOT="${K3_CACHE_ROOT}/vllm-generate/vllm-config"
@@ -71,7 +74,7 @@ srun \
   --account=coreai_devtech_all \
   --container-image="${K3_TRAINING_IMAGE}" \
   --container-mounts=/lustre:/lustre \
-  --export=PYTHONNOUSERSITE,OMP_NUM_THREADS,PYTHONPATH,LD_LIBRARY_PATH,LD_PRELOAD,XDG_CACHE_HOME,VLLM_CACHE_ROOT,VLLM_CONFIG_ROOT,FLASHINFER_WORKSPACE_BASE,TORCHINDUCTOR_CACHE_DIR,TRITON_CACHE_DIR,MASTER_ADDR,MASTER_PORT,K3_MODEL_PATH,K3_RESPONSE_FILE,WANDB_ENTITY,WANDB_PROJECT,RUN_NAME \
+  --export=PYTHONNOUSERSITE,OMP_NUM_THREADS,PATH,CC,CXX,CPATH,PYTHONPATH,LD_LIBRARY_PATH,XDG_CACHE_HOME,VLLM_CACHE_ROOT,VLLM_CONFIG_ROOT,FLASHINFER_WORKSPACE_BASE,TORCHINDUCTOR_CACHE_DIR,TRITON_CACHE_DIR,MASTER_ADDR,MASTER_PORT,K3_MODEL_PATH,K3_RESPONSE_FILE,WANDB_ENTITY,WANDB_PROJECT,RUN_NAME \
   /bin/bash --noprofile --norc -c '
 set -euo pipefail
 export WORLD_SIZE="${SLURM_NTASKS}"
