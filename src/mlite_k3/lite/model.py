@@ -23,6 +23,7 @@ from megatron.lite.primitive.parallel import (
 from megatron.lite.primitive.parallel.cp import zigzag_slice_for_cp
 
 from mlite_k3.config import K3Config
+from mlite_k3.lite.loss_layout import prepare_labels_and_loss_mask
 from mlite_k3.lite.pipeline_layout import (
     _attn_res_decoder_layer_groups,
     validate_attn_res_pipeline_split,
@@ -464,26 +465,17 @@ class K3ParallelModel(nn.Module):
         if labels is None:
             output["logits"] = self.lm_head.gather(logits).transpose(0, 1).contiguous()
         else:
-            labels_sb = labels.transpose(0, 1).contiguous()
-            if slice_for_cp:
-                labels_sb = zigzag_slice_for_cp(
-                    labels_sb,
-                    self.ps.cp_rank,
-                    self.ps.cp_size,
-                    seq_dim=0,
-                )
+            labels_sb, mask_sb = prepare_labels_and_loss_mask(
+                labels,
+                loss_mask,
+                self.ps,
+                slice_for_cp=slice_for_cp,
+            )
             loss = vocab_parallel_cross_entropy(logits, labels_sb, self.ps.tp_group)
-            if loss_mask is None:
+            if mask_sb is None:
                 output["loss"] = loss.mean()
             else:
-                mask_sb = loss_mask.transpose(0, 1).to(dtype=loss.dtype)
-                if slice_for_cp:
-                    mask_sb = zigzag_slice_for_cp(
-                        mask_sb,
-                        self.ps.cp_rank,
-                        self.ps.cp_size,
-                        seq_dim=0,
-                    )
+                mask_sb = mask_sb.to(dtype=loss.dtype)
                 output["loss"] = (loss * mask_sb).sum() / mask_sb.sum().clamp_min(1)
             output["log_probs"] = (-loss).transpose(0, 1).contiguous()
         return output

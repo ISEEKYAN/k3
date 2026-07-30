@@ -153,17 +153,24 @@ distributed claims require their own non-skipped tests.
 `K3ParallelModel` uses Megatron Lite's
 `build_pipeline_chunk_layout(..., decoder_layer_groups=...)` primitive. It
 turns each configured Attention Residual block into an indivisible decoder
-group and validates the resulting local stage before constructing layers.
-Custom layouts that split a group, and PP sizes that leave a decoder-empty
-stage, fail during model construction.
+group for the default automatic layout and validates the resulting local stage
+before constructing layers. PP sizes that leave a decoder-empty stage, layouts
+that do not cover every decoder exactly once, and PP larger than the decoder
+count fail during model construction.
 
 The public 93-layer configuration uses `attn_res_block_size=12`, so its groups
 are `0..11`, `12..23`, ..., `72..83`, and the final `84..92`. Automatic PP8
 therefore assigns `[12, 12, 12, 12, 12, 12, 12, 9]` decoder layers. The first
 stage also owns the embedding and the shorter final stage owns the final
-Attention Residual projection, norm, and language-model head. There are only
-eight indivisible groups, so this contract deliberately rejects PP greater
-than 8 instead of silently adding a cross-stage Attention Residual dependency.
+Attention Residual projection, norm, and language-model head.
+
+Block alignment is a default performance policy, not a correctness
+requirement. An explicit `ParallelState.pp_layout` opts out of grouped
+auto-layout and emits a warning describing the tradeoff. The cumulative
+Attention Residual snapshots already travel in the folded pipeline activation,
+so a split block adds no distinct P2P call and remains numerically valid.
+Boundary placement can still change the folded activation width and pipeline
+bubble, so explicit layouts should be benchmarked.
 
 No separate P2P call is added for Attention Residuals. The existing pipeline
 activation packs the normal hidden state together with the cumulative residual
@@ -177,15 +184,33 @@ Residual blending computes its score in FP32 and converts back to the
 activation dtype; pipeline transport is BF16 when activations are BF16, not
 unconditionally FP32.
 
-For comparison, bypassing the group contract and asking the same MLite
-primitive for PP9 would produce decoder counts
-`[10, 11, 11, 11, 11, 10, 10, 10, 9]`. Its boundary snapshot counts are
-`[1, 2, 3, 4, 5, 6, 7, 7]`: 43 hidden-sized components across the forward
-chain versus 35 for aligned PP8, a 22.9% increase (112 KiB per local BF16
-token), with the same increase for backward gradients. The residual stream
-still adds zero distinct P2P calls, but PP9 itself adds one pipeline boundary
-and therefore one normal send/receive in each direction per microbatch. K3
-rejects this counterfactual layout because it splits Attention Residual groups.
+The default aligned layouts and decoder-only balance estimates are:
+
+| PP | Decoder layers per stage | Layer utilization |
+|---:|---|---:|
+| 2 | `[48, 45]` | 96.875% |
+| 3 | `[24, 36, 33]` | 86.111% |
+| 5 | `[12, 12, 24, 24, 21]` | 77.500% |
+| 6 | `[12, 12, 12, 12, 24, 21]` | 64.583% |
+| 7 | `[12, 12, 12, 12, 12, 12, 21]` | 63.265% |
+| 8 | `[12, 12, 12, 12, 12, 12, 12, 9]` | 96.875% |
+
+Layer utilization is `93 / (PP * max_stage_layers)` and excludes embedding,
+head, attention/MoE heterogeneity, and fill/drain bubble.
+
+For PP3, an explicit `[32, 32, 29]` layout has 96.875% decoder-layer
+utilization and 3.125% imbalance bubble, versus 86.111% utilization and 13.889%
+bubble for any aligned layout whose bottleneck has 36 layers (including
+`[36, 36, 21]` and the default `[24, 36, 33]`). Under a uniform per-layer
+first-order model, reducing the bottleneck from 36 to 32 layers lowers
+bottleneck compute time by 11.1% and raises throughput by 12.5%; production
+timing must account for heterogeneous layers.
+
+The aligned `[36, 36, 21]` boundaries and split `[32, 32, 29]` boundaries both
+carry snapshot counts `[3, 6]`. With K3's `H=7168` and BF16, both therefore
+send 56 KiB and 98 KiB per local token across their two forward boundaries
+(154 KiB total), with the same shapes for backward. Their communication
+difference is zero.
 
 Construct the model normally; the grouped layout is automatic:
 
@@ -207,6 +232,23 @@ parallel = ParallelState(
 )
 model = K3ParallelModel(K3Config(), parallel)
 assert model.layer_indices == list(range(84, 93))
+```
+
+To request the balanced PP3 layout explicitly:
+
+```python
+rows = [
+    ["embedding", *(["decoder"] * 32)],
+    ["decoder"] * 32,
+    [*(["decoder"] * 29), "loss"],
+]
+parallel = ParallelState(
+    pp_size=3,
+    pp_rank=rank,
+    pp_is_first=rank == 0,
+    pp_is_last=rank == 2,
+    pp_layout=rows,
+)
 ```
 
 ## Tutorial 5: save a public HF checkpoint
