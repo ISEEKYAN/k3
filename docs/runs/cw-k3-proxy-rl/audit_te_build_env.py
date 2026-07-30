@@ -22,11 +22,13 @@ def command(name: str, *args: str) -> dict[str, object]:
         capture_output=True,
         text=True,
     )
+    output_lines = (completed.stdout or completed.stderr).splitlines()
     return {
         "ok": completed.returncode == 0,
         "path": path,
         "rc": completed.returncode,
-        "output": (completed.stdout or completed.stderr).splitlines()[:4],
+        "output_head": output_lines[:8],
+        "output_tail": output_lines[-20:],
     }
 
 

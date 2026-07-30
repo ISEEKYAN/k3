@@ -96,6 +96,7 @@ def test_te_audit_uses_node_local_dependencies_and_reports_missing_git():
     assert '"required": False' in audit
     assert '"tmp_disk"' in audit
     assert '"cuda_header_smoke"' in audit
+    assert '"output_tail"' in audit
     assert "FileNotFoundError" not in audit
     assert "nvidia-cuda-nvcc" not in requirements
     assert "CUDA_HOME=/usr/local/cuda-13.0" in build
