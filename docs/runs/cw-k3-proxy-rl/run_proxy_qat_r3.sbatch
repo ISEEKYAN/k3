@@ -42,6 +42,7 @@ srun \
   --no-container-entrypoint \
   --container-mounts=/lustre:/lustre \
   --export=ALL \
+  /usr/bin/env -u ROCR_VISIBLE_DEVICES \
   /bin/bash --noprofile --norc -c '
 set -euo pipefail
 source "'"${recipe_dir}"'/k3_training_env.sh"
@@ -77,6 +78,7 @@ export PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-512}"
 # intentionally rejects simultaneous ROCm and CUDA visibility contracts.
 unset ROCR_VISIBLE_DEVICES
 export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
+export RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1
 export RAY_memory_monitor_refresh_ms=0
 export VLLM_USE_V1=1
 export VLLM_ALLREDUCE_USE_SYMM_MEM=0
@@ -109,6 +111,12 @@ env PYTHONPATH="${VLLM_SITE}" MLITE_K3_AUTO_REGISTER=0 \
     --disable-usage-stats \
     --temp-dir="${RAY_TMPDIR}"
 export RAY_ADDRESS=auto
+if [[ -v ROCR_VISIBLE_DEVICES ]]; then
+  echo "FATAL ROCR_VISIBLE_DEVICES survived CUDA environment cleanup" >&2
+  exit 2
+fi
+echo "K3_ROCR_ENV_CLEAN driver=1"
+python3 "${recipe_dir}/assert_ray_cuda_env.py"
 
 log_file="${OUTPUT_ROOT}/${RUN_NAME}.launcher.log"
 mkdir -p "${OUTPUT_ROOT}"
@@ -139,6 +147,7 @@ bash "${MLITE_ROOT}/experimental/lite/examples/verl/scripts/run_qwen3moe_gsm8k_g
   "actor_rollout_ref.rollout.enable_rollout_routing_replay=True" \
   "trainer.use_v1=False" \
   "data.trust_remote_code=True" \
+  "++ray_kwargs.ray_init.runtime_env.env_vars.RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1" \
   2>&1 | tee "${log_file}"
 run_rc=${PIPESTATUS[0]}
 set -e

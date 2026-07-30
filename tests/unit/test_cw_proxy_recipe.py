@@ -223,6 +223,26 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert runner.index("unset ROCR_VISIBLE_DEVICES") < runner.index(
         "python3 -m ray.scripts.scripts start --head"
     )
+    assert "/usr/bin/env -u ROCR_VISIBLE_DEVICES" in runner
+    assert "export RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1" in runner
+    assert (
+        "++ray_kwargs.ray_init.runtime_env.env_vars."
+        "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1"
+    ) in runner
+    assert 'python3 "${recipe_dir}/assert_ray_cuda_env.py"' in runner
+    assert runner.index('python3 "${recipe_dir}/assert_ray_cuda_env.py"') < runner.index(
+        'bash "${MLITE_ROOT}/experimental/lite/examples/verl/scripts/'
+        'run_qwen3moe_gsm8k_grpo.sh"'
+    )
+
+
+def test_ray_cuda_environment_gate_checks_a_gpu_actor():
+    gate = read("assert_ray_cuda_env.py")
+
+    assert "@ray.remote(num_gpus=1)" in gate
+    assert '"ROCR_VISIBLE_DEVICES" not in os.environ' in gate
+    assert '"CUDA_VISIBLE_DEVICES" in os.environ' in gate
+    assert "K3_RAY_CUDA_ENV_OK" in gate
 
 
 def test_ray_startup_probe_is_a_zero_gpu_full_environment_gate():
