@@ -26,8 +26,7 @@ ray.init(
         "env_vars": {
             "PYTHONPATH": os.environ["PYTHONPATH"],
             "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES": "1",
-            "HYDRA_SITE": os.environ["HYDRA_SITE"],
-            "TENSORDICT_SITE": os.environ["TENSORDICT_SITE"],
+            "VERL_PRUNED_SITE": os.environ["VERL_PRUNED_SITE"],
             "VERL_DEPS_SITE": os.environ["VERL_DEPS_SITE"],
             "VLLM_SITE": os.environ["VLLM_SITE"],
         }

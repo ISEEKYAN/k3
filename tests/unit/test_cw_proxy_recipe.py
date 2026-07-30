@@ -49,12 +49,14 @@ def test_training_environment_preserves_three_pollution_boundaries():
     assert "VLLM_SITE:=${K3_VLLM_SITE}" in env
     assert "TRAINING_VLLM_SITE" not in env
     assert "MLITE_SM90_SITE" not in env
-    assert 'export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:' in env
+    assert (
+        'export PYTHONPATH="${VERL_ROOT}:${VLLM_SITE}:${VERL_PRUNED_SITE}:${FLA_SITE}:'
+    ) in env
     assert (
         "${FLA_SITE}:${CUTLASS_DSL_SITE}:${recipe_dir}:${K3_ROOT}/src:"
-        "${MEGATRON_ROOT}:${VERL_ROOT}:${VERL_DEPS_SITE}:"
+        "${MEGATRON_ROOT}:"
         "${MLITE_ROOT}/experimental/lite/examples/verl:"
-        '${MLITE_ROOT}/experimental/lite:${HYDRA_SITE}"'
+        '${MLITE_ROOT}/experimental/lite:/vllm"'
     ) in env
     assert "CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH" in env
     assert "CC CXX CFLAGS CPPFLAGS CXXFLAGS LDFLAGS" in env
@@ -243,6 +245,10 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
         'run_qwen3moe_gsm8k_grpo.sh"'
     )
     assert 'python3 "${recipe_dir}/assert_runtime_package_paths.py"' in runner
+    assert 'python3 "${K3_FULL_CLOSURE_PROBE}"' in runner
+    assert runner.index('python3 "${K3_FULL_CLOSURE_PROBE}"') < runner.index(
+        'python3 "${recipe_dir}/assert_runtime_package_paths.py"'
+    )
     assert runner.index('python3 "${recipe_dir}/assert_runtime_package_paths.py"') < (
         runner.index("python3 -m ray.scripts.scripts start --head")
     )
@@ -256,20 +262,24 @@ def test_ray_cuda_environment_gate_checks_a_gpu_actor():
     assert '"CUDA_VISIBLE_DEVICES" in os.environ' in gate
     assert "assert_runtime_package_paths" in gate
     assert '"PYTHONPATH": os.environ["PYTHONPATH"]' in gate
-    assert '"HYDRA_SITE": os.environ["HYDRA_SITE"]' in gate
+    assert '"VERL_PRUNED_SITE": os.environ["VERL_PRUNED_SITE"]' in gate
     assert "K3_RAY_CUDA_ENV_OK" in gate
 
 
-def test_container_python_and_narrow_dependency_sites_fail_loud():
+def test_container_python_and_pruned_verl_site_fail_loud():
     image = read("image.env")
     env = read("k3_training_env.sh")
     validate = read("assert_runtime_package_paths.py")
 
-    assert "K3_TENSORDICT_SITE=" in image
+    assert "K3_TENSORDICT_SITE=" not in image
     assert "K3_PYVERS_SITE=" not in image
-    assert "K3_HYDRA_SITE=" in image
-    assert 'export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:' in env
-    assert '${MLITE_ROOT}/experimental/lite:${HYDRA_SITE}"' in env
+    assert "K3_HYDRA_SITE=" not in image
+    assert "K3_VERL_PRUNED_SITE=" in image
+    assert "k3-verl-deps-pruned-site" in image
+    assert "closure_full.py" in image
+    assert (
+        'export PYTHONPATH="${VERL_ROOT}:${VLLM_SITE}:${VERL_PRUNED_SITE}:${FLA_SITE}:'
+    ) in env
     for package in (
         "huggingface_hub",
         "transformers",
@@ -279,9 +289,14 @@ def test_container_python_and_narrow_dependency_sites_fail_loud():
         "ray",
         "pyvers",
         "hydra",
+        "codetiming",
+        "orjson",
+        "wandb",
     ):
         assert package in validate
-    assert '"hydra": ("hydra", hydra_site)' in validate
+    assert '"hydra": ("hydra", verl_pruned_site)' in validate
+    assert '"codetiming": ("codetiming", verl_pruned_site)' in validate
+    assert '"orjson": ("orjson", verl_pruned_site)' in validate
     assert '"omegaconf":' not in validate
     assert '"antlr4":' not in validate
     assert '"0.10.0"' in validate

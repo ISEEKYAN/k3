@@ -33,8 +33,7 @@ def assert_runtime_package_paths() -> dict[str, object]:
     )
 
     vllm_site = Path(os.environ["VLLM_SITE"]).absolute()
-    tensordict_site = Path(os.environ["TENSORDICT_SITE"]).absolute()
-    hydra_site = Path(os.environ["HYDRA_SITE"]).absolute()
+    verl_pruned_site = Path(os.environ["VERL_PRUNED_SITE"]).absolute()
     base_site = Path(os.environ["VERL_DEPS_SITE"]).absolute()
     expected_modules = {
         "huggingface_hub": ("huggingface_hub", base_site),
@@ -43,9 +42,12 @@ def assert_runtime_package_paths() -> dict[str, object]:
         # This vLLM build names its ABI-stable CUDA extension explicitly.
         "vllm._C": ("vllm._C_stable_libtorch", vllm_site),
         "ray": ("ray", vllm_site),
-        "tensordict": ("tensordict", tensordict_site),
-        "pyvers": ("pyvers", tensordict_site),
-        "hydra": ("hydra", hydra_site),
+        "wandb": ("wandb", vllm_site),
+        "tensordict": ("tensordict", verl_pruned_site),
+        "pyvers": ("pyvers", verl_pruned_site),
+        "hydra": ("hydra", verl_pruned_site),
+        "codetiming": ("codetiming", verl_pruned_site),
+        "orjson": ("orjson", verl_pruned_site),
     }
     resolved: dict[str, str] = {}
     for label, (module_name, expected_site) in expected_modules.items():

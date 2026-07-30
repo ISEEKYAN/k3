@@ -52,6 +52,7 @@ srun \
   /bin/bash --noprofile --norc -c '
 set -euo pipefail
 source "'"${recipe_dir}"'/k3_training_env.sh"
+python3 "${K3_FULL_CLOSURE_PROBE}"
 python3 "${recipe_dir}/assert_runtime_package_paths.py"
 
 export WANDB_ENTITY="${WANDB_ENTITY:-megatron-core-moe-dev}"
