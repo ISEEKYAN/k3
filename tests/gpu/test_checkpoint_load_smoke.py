@@ -13,7 +13,12 @@ from torch.distributed.elastic.multiprocessing.errors import record
 from megatron.lite.primitive.parallel import ParallelState
 from megatron.lite.runtime.contracts import ParallelConfig
 from mlite_k3.config import K3Config
-from mlite_k3.lite.checkpoint import K3WeightSpec, save_hf_weights
+from mlite_k3.lite.checkpoint import (
+    K3WeightSpec,
+    export_hf_weights,
+    load_hf_weights as load_checkpoint,
+    save_hf_weights,
+)
 from mlite_k3.lite.model import K3ParallelModel
 from mlite_k3.lite.protocol import ImplConfig, build_model, load_hf_weights
 
@@ -112,7 +117,13 @@ def main() -> None:
             device=device,
             dtype=torch.bfloat16,
         )
-        summary = save_hf_weights(reference, root, config, target="mxfp4")
+        summary = save_hf_weights(
+            reference,
+            root,
+            config,
+            ParallelState(),
+            target="mxfp4",
+        )
         (root / "config.json").write_text(
             json.dumps(_quantization_config(config), sort_keys=True),
             encoding="utf-8",
@@ -132,6 +143,45 @@ def main() -> None:
             flush=True,
         )
     dist.barrier()
+
+    single = K3ParallelModel(config, ParallelState()).to(
+        device=device,
+        dtype=torch.bfloat16,
+    )
+    load_checkpoint(single, root, config, ParallelState())
+    baseline = dict(
+        export_hf_weights(
+            single,
+            config,
+            ParallelState(),
+            target="bf16",
+            cpu=True,
+        )
+    )
+    from megatron.lite.primitive.quantization.qat import (
+        QATSpec,
+        apply_qat_to_chunks,
+    )
+
+    qat_stats = apply_qat_to_chunks(
+        [single],
+        QATSpec(enabled=True, format="mxfp4", ignore_patterns=()),
+    )
+    qat_export = dict(
+        export_hf_weights(
+            single,
+            config,
+            ParallelState(),
+            target="bf16",
+            cpu=True,
+        )
+    )
+    if baseline.keys() != qat_export.keys():
+        raise RuntimeError("K3 QAT changed the canonical HF export key set")
+    if any(not torch.equal(baseline[name], qat_export[name]) for name in baseline):
+        raise RuntimeError("K3 QAT export did not preserve BF16 master weights")
+    del qat_export, single
+    torch.cuda.empty_cache()
 
     parallel = (
         ParallelConfig(tp=1, ep=1, etp=1, pp=1, cp=1)
@@ -161,6 +211,19 @@ def main() -> None:
     ]
     if expert_bias and any(tensor.dtype != torch.float32 for tensor in expert_bias):
         raise RuntimeError("K3 expert_bias did not preserve its FP32 state dtype")
+    gathered_export = dict(
+        export_hf_weights(
+            model,
+            config,
+            bundle.parallel_state,
+            target="bf16",
+            cpu=True,
+        )
+    )
+    if baseline.keys() != gathered_export.keys():
+        raise RuntimeError("K3 TP/EP/PP export changed the HF key set")
+    if any(not torch.equal(baseline[name], gathered_export[name]) for name in baseline):
+        raise RuntimeError("K3 TP/EP/PP export differs from single-rank export")
 
     local_metrics = torch.tensor(
         [
@@ -169,6 +232,7 @@ def main() -> None:
             len(model.layer_indices),
             int(model.pre_process),
             int(model.post_process),
+            qat_stats["quantized_modules"],
         ],
         device=device,
         dtype=torch.long,
@@ -192,6 +256,8 @@ def main() -> None:
                     ),
                     "all_checkpoint_tensors_finite": True,
                     "expert_bias_dtype": "torch.float32",
+                    "qat_key_set_equal": True,
+                    "tp_ep_pp_bitwise_equal": True,
                 },
                 sort_keys=True,
             ),

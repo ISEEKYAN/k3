@@ -265,6 +265,7 @@ save_hf_weights(
     model,
     "./k3-hf",
     config,
+    bundle.parallel_state,
     target="mxfp4",
     max_shard_size_bytes=5 * 1024**3,
 )
@@ -332,8 +333,10 @@ routed-expert linear weights are parametrized. Attention, shared experts,
 dense MLPs, embeddings, residual projections, routers, and the language-model
 head remain unquantized. Checkpoint load and BF16 export resolve QAT
 `parametrizations.weight.original` names back to their logical public names.
-For rollout resynchronization, `iter_hf_weights(model, spec, target="mxfp4")`
-emits `_packed`/`_scale` pairs only for routed-expert `w1`, `w2`, and `w3`.
+For rollout resynchronization, `protocol.export_hf_weights(
+bundle.chunks, config, bundle.parallel_state, target="mxfp4")` gathers the
+shared TP/ETP/EP/PP state before emitting `_packed`/`_scale` pairs only for
+routed-expert `w1`, `w2`, and `w3`.
 
 This is a QAT graph/checkpoint/export contract. K3 still rejects a non-null
 `ImplConfig.optimizer`, so it does not claim an optimizer-backed QAT training

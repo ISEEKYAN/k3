@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -14,11 +15,23 @@ from mlite_k3.lite.checkpoint import (
     WeightIndexAudit,
     audit_k3_weight_spec_sources,
     audit_k3_weight_index,
+    export_hf_weights,
     get_hf_weight,
-    iter_hf_weights,
     save_hf_weights,
     parse_k3_quantization_metadata,
 )
+
+
+def _single_rank_parallel_state():
+    return SimpleNamespace(
+        pp_size=1,
+        tp_size=1,
+        tp_group=None,
+        ep_size=1,
+        ep_group=None,
+        etp_size=1,
+        etp_group=None,
+    )
 
 
 class _Reader:
@@ -420,6 +433,31 @@ def test_k3_load_delegates_to_shared_hfweights_primitive(monkeypatch):
     assert kwargs == {"vocab_size": 64}
 
 
+def test_k3_export_delegates_to_shared_hfweights_primitive(monkeypatch):
+    calls = []
+    sentinel = torch.tensor([1.0])
+
+    def fake_export(*args, **kwargs):
+        calls.append((args, kwargs))
+        yield "language_model.model.norm.weight", sentinel
+
+    monkeypatch.setattr(
+        "megatron.lite.primitive.ckpt.hf_weights.export_hf_weights",
+        fake_export,
+    )
+    model = nn.Module()
+    ps = object()
+
+    exported = list(export_hf_weights(model, _TinyConfig(), ps))
+
+    assert exported == [("language_model.model.norm.weight", sentinel)]
+    args, kwargs = calls.pop()
+    assert args[0] is model
+    assert isinstance(args[1], K3WeightSpec)
+    assert args[2] is ps
+    assert kwargs == {"vocab_size": 64}
+
+
 def test_k3_weight_spec_applies_only_the_two_required_layout_transforms():
     spec = K3WeightSpec(_TinyConfig())
     gate = torch.randn(3, 4)
@@ -523,11 +561,13 @@ class _ExpertConfig:
 
 
 def test_mxfp4_resync_export_only_packs_routed_expert_weights():
-    spec = K3WeightSpec(_ExpertConfig())
-    model = _TinyExpertModel()
     prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
+    weights = [
+        (f"{prefix}.w1.weight", torch.randn(3, 32, dtype=torch.bfloat16)),
+        (f"{prefix}.w3.weight", torch.randn(3, 32, dtype=torch.bfloat16)),
+    ]
 
-    exported = dict(iter_hf_weights(model, spec, target="mxfp4"))
+    exported = dict(checkpoint._export_mxfp4_weights(iter(weights)))
 
     assert set(exported) == {
         f"{prefix}.w1.weight_packed",
@@ -540,7 +580,9 @@ def test_mxfp4_resync_export_only_packs_routed_expert_weights():
 
 
 @pytest.mark.parametrize("target", ("bf16", "mxfp4"))
-def test_save_hf_weights_writes_shards_and_roundtrips_real_files(tmp_path, target):
+def test_save_hf_weights_writes_shards_and_roundtrips_real_files(
+    tmp_path, target, monkeypatch
+):
     from megatron.lite.primitive.ckpt.hf_weights import SafeTensorReader
 
     source = _TinyExpertModel()
@@ -548,10 +590,28 @@ def test_save_hf_weights_writes_shards_and_roundtrips_real_files(tmp_path, targe
         "expert_bias", torch.tensor([0.25], dtype=torch.float32)
     )
     spec = K3WeightSpec(_ExpertConfig())
+    native = source.layers[0].moe.experts.fc1.weight0.detach().cpu()
+    exported = spec.native_to_hf("layers.0.moe.experts.fc1.weight0", native)
+    exported.append(
+        (
+            "language_model.model.layers.0.block_sparse_moe.gate."
+            "e_score_correction_bias",
+            source.layers[0].moe.router.expert_bias,
+        )
+    )
+
+    def fake_export(*_args, **_kwargs):
+        weights = iter(exported)
+        yield from (
+            checkpoint._export_mxfp4_weights(weights) if target == "mxfp4" else weights
+        )
+
+    monkeypatch.setattr(checkpoint, "export_hf_weights", fake_export)
     summary = save_hf_weights(
         source,
         tmp_path,
         _ExpertConfig(),
+        _single_rank_parallel_state(),
         target=target,
         max_shard_size_bytes=64,
     )

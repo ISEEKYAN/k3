@@ -719,61 +719,47 @@ def get_hf_weight(reader: Any, name: str) -> torch.Tensor:
     raise KeyError(f"checkpoint tensor {name!r} was not found")
 
 
-def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
-    base = model
-    seen: set[int] = set()
-    while isinstance(getattr(base, "module", None), torch.nn.Module):
-        if id(base) in seen:
-            break
-        seen.add(id(base))
-        base = base.module
-    return base
+def _export_mxfp4_weights(
+    weights: Iterator[tuple[str, torch.Tensor]],
+):
+    """Encode only public routed-expert weights from a gathered HF stream."""
+    for hf_name, hf_tensor in weights:
+        if not _ROUTED_MXFP4_WEIGHT.fullmatch(hf_name):
+            yield hf_name, hf_tensor
+            continue
+        from megatron.lite.primitive.quantization.mxfp4 import quantize_mxfp4
+
+        packed, scale = quantize_mxfp4(hf_tensor)
+        yield f"{hf_name}_packed", packed
+        yield f"{hf_name}_scale", scale.view(torch.uint8)
 
 
-def _named_checkpoint_tensors(model: torch.nn.Module):
-    """Yield every persistent model tensor represented by the public spec."""
-    persistent = set(model.state_dict())
-    yield from model.named_parameters()
-    yield from (
-        (name, buffer)
-        for name, buffer in model.named_buffers()
-        if name in persistent and ".parametrizations." not in name
-    )
-
-
-def _canonical_state_key(name: str) -> str:
-    from megatron.lite.primitive.quantization.qat import canonical_state_key
-
-    return canonical_state_key(name)
-
-
-def iter_hf_weights(
-    model: torch.nn.Module,
-    spec: K3WeightSpec,
+def export_hf_weights(
+    model: torch.nn.Module | list[torch.nn.Module],
+    config: Any,
+    ps: Any,
     *,
     target: str = "bf16",
+    **kwargs,
 ):
-    """Yield BF16 or public MXFP4 HF tensors one native tensor at a time."""
-    if target not in ("bf16", "mxfp4"):
-        raise ValueError("target must be 'bf16' or 'mxfp4'")
-    base = _unwrap_model(model)
-    mapping = spec.weight_map()
-    for state_name, parameter in _named_checkpoint_tensors(base):
-        native_name = _canonical_state_key(state_name)
-        if native_name not in mapping:
-            raise KeyError(
-                f"native tensor {native_name!r} has no K3 checkpoint mapping"
-            )
-        tensor = parameter.detach().to(device="cpu", dtype=torch.bfloat16)
-        for hf_name, hf_tensor in spec.native_to_hf(native_name, tensor):
-            if target == "bf16" or not _ROUTED_MXFP4_WEIGHT.fullmatch(hf_name):
-                yield hf_name, hf_tensor
-                continue
-            from megatron.lite.primitive.quantization.mxfp4 import quantize_mxfp4
+    """Export full K3 HF tensors through MLite's shared distributed primitive."""
+    from megatron.lite.primitive.ckpt.hf_weights import (
+        export_hf_weights as export_with_primitive,
+    )
 
-            packed, scale = quantize_mxfp4(hf_tensor)
-            yield f"{hf_name}_packed", packed
-            yield f"{hf_name}_scale", scale.view(torch.uint8)
+    if target not in ("hf", "bf16", "mxfp4"):
+        raise ValueError("target must be 'hf', 'bf16', or 'mxfp4'")
+    weights = export_with_primitive(
+        model,
+        K3WeightSpec(config),
+        ps,
+        vocab_size=config.vocab_size,
+        **kwargs,
+    )
+    if target in ("hf", "bf16"):
+        yield from weights
+        return
+    yield from _export_mxfp4_weights(weights)
 
 
 def _checkpoint_tensor(name: str, tensor: torch.Tensor) -> tuple[str, torch.Tensor]:
@@ -815,9 +801,10 @@ def _write_json_atomically(path: Path, contents: Mapping[str, Any]) -> None:
 
 
 def save_hf_weights(
-    model: torch.nn.Module,
+    model: torch.nn.Module | list[torch.nn.Module],
     path: str | Path,
     config: Any,
+    ps: Any,
     *,
     target: str = "bf16",
     max_shard_size_bytes: int = 5 * 1024**3,
@@ -835,8 +822,10 @@ def save_hf_weights(
 
     from safetensors.torch import save_file
 
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
     root = Path(path)
-    root.mkdir(parents=True, exist_ok=True)
+    if rank == 0:
+        root.mkdir(parents=True, exist_ok=True)
     index: dict[str, str] = {}
     total_size = 0
     shard_number = 0
@@ -857,7 +846,16 @@ def save_hf_weights(
         shard = {}
         shard_size = 0
 
-    weights = iter(iter_hf_weights(model, K3WeightSpec(config), target=target))
+    weights = iter(
+        export_hf_weights(
+            model,
+            config,
+            ps,
+            target=target,
+            rank0_only=True,
+            cpu=True,
+        )
+    )
     while True:
         try:
             group = _next_save_group(weights, target)
@@ -871,14 +869,22 @@ def save_hf_weights(
         total_size += group_size
     flush_shard()
 
-    _write_json_atomically(
-        root / "model.safetensors.index.json",
-        {
-            "metadata": {"format": target, "total_size": total_size},
-            "weight_map": index,
-        },
-    )
-    return audit_k3_weight_index({"weight_map": index})
+    result = None
+    if rank == 0:
+        _write_json_atomically(
+            root / "model.safetensors.index.json",
+            {
+                "metadata": {"format": target, "total_size": total_size},
+                "weight_map": index,
+            },
+        )
+        result = audit_k3_weight_index({"weight_map": index})
+    if torch.distributed.is_initialized():
+        payload = [result]
+        torch.distributed.broadcast_object_list(payload, src=0)
+        result = payload[0]
+    assert result is not None
+    return result
 
 
 def load_hf_weights(
@@ -990,9 +996,9 @@ __all__ = [
     "audit_k3_weight_spec_sources",
     "WeightIndexAudit",
     "audit_k3_weight_index",
+    "export_hf_weights",
     "get_hf_weight",
     "inspect_hf_checkpoint",
-    "iter_hf_weights",
     "load_hf_weights",
     "parse_k3_quantization_metadata",
     "plan_k3_rank_weights",

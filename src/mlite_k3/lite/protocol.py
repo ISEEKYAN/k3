@@ -176,10 +176,23 @@ def load_hf_weights(
     return load_impl(chunk, hf_path, model_cfg, ps)
 
 
+def export_hf_weights(
+    chunks: list[torch.nn.Module],
+    model_cfg: K3Config,
+    ps: Any,
+    **kwargs,
+):
+    """Export gathered public K3 weights through the shared HF primitive."""
+    from mlite_k3.lite.checkpoint import export_hf_weights as export_impl
+
+    yield from export_impl(chunks, model_cfg, ps, **kwargs)
+
+
 __all__ = [
     "ImplConfig",
     "build_model",
     "build_model_config",
+    "export_hf_weights",
     "load_hf_weights",
     "pack_r3_replay_mask",
     "pack_routed_experts",
