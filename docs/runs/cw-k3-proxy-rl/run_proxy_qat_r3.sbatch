@@ -99,10 +99,10 @@ wandb_watch_pid=$!
 
 set +e
 bash "${MLITE_ROOT}/experimental/lite/examples/verl/scripts/run_qwen3moe_gsm8k_grpo.sh" \
-  "+actor_rollout_ref.actor.engine.impl_cfg.qat.enabled=true" \
-  "+actor_rollout_ref.actor.engine.impl_cfg.qat.format=mxfp4" \
-  "+actor_rollout_ref.actor.engine.impl_cfg.qat.group_size=32" \
-  "+actor_rollout_ref.actor.engine.impl_cfg.moe_router_fusion=false" \
+  "++actor_rollout_ref.actor.engine.impl_cfg.qat.enabled=true" \
+  "++actor_rollout_ref.actor.engine.impl_cfg.qat.format=mxfp4" \
+  "++actor_rollout_ref.actor.engine.impl_cfg.qat.group_size=32" \
+  "++actor_rollout_ref.actor.engine.impl_cfg.moe_router_fusion=false" \
   "++actor_rollout_ref.actor.engine.router_replay_mode=R3" \
   "actor_rollout_ref.rollout.enable_rollout_routing_replay=True" \
   2>&1 | tee "${log_file}"
