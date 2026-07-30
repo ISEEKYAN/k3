@@ -59,6 +59,9 @@ def test_jit_cache_is_persistent_keyed_and_fail_loud():
     assert "TRITON_CACHE_DIR" in env
     assert "TORCHINDUCTOR_CACHE_DIR" in env
     assert "FATAL JIT cache fingerprint mismatch" in env
+    assert "K3_IMAGE_SQSH" in env
+    assert "K3_IMAGE_SQSH}.sha256" in env
+    assert "runtime_image_fingerprint" in env
 
 
 def test_overlay_validation_is_inside_srun():

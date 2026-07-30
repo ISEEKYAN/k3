@@ -49,9 +49,24 @@ else
   gpu_cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '[:space:].')
 fi
 
+runtime_image_fingerprint="${K3_IMAGE_AMD64_DIGEST}"
+if [[ -n "${K3_IMAGE_SQSH:-}" ]]; then
+  sqsh_sidecar="${K3_IMAGE_SQSH}.sha256"
+  if [[ ! -r "${sqsh_sidecar}" ]]; then
+    echo "FATAL cached image SHA256 sidecar is missing: ${sqsh_sidecar}" >&2
+    exit 2
+  fi
+  read -r sqsh_sha sqsh_recorded_path <"${sqsh_sidecar}"
+  if [[ ! "${sqsh_sha}" =~ ^[0-9a-f]{64}$ || "${sqsh_recorded_path}" != "${K3_IMAGE_SQSH}" ]]; then
+    echo "FATAL cached image SHA256 sidecar mismatch: ${sqsh_sidecar}" >&2
+    exit 2
+  fi
+  runtime_image_fingerprint="sqsh:${sqsh_sha}:${K3_IMAGE_SQSH}"
+fi
+
 fingerprint_input="$(
   printf '%s\n' \
-    "${K3_IMAGE_AMD64_DIGEST}" \
+    "${runtime_image_fingerprint}" \
     "${k3_source_sha}" \
     "${MLITE_SOURCE_SHA}" \
     "${TE_SOURCE_SHA}" \
