@@ -269,4 +269,5 @@ def test_ep8_moe_backward_probe_uses_one_production_shape_layer():
     assert "config.hidden_size" in probe
     assert '"backward_start"' in probe
     assert '"backward_done"' in probe
+    assert "next(module.router.parameters())" in probe
     assert "K3_EP8_MOE_BACKWARD_OK=" in probe

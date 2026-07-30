@@ -74,9 +74,10 @@ def main() -> None:
     output.float().square().mean().backward()
     mark(rank, "backward_done")
 
+    router_parameter = next(module.router.parameters())
     samples = {
         "hidden": finite_sample(hidden.grad),
-        "router": finite_sample(module.router.weight.grad),
+        "router": finite_sample(router_parameter.grad),
         "down_proj": finite_sample(module.routed_expert_down_proj.weight.grad),
         "up_proj": finite_sample(module.routed_expert_up_proj.weight.grad),
     }
