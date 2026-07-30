@@ -6,7 +6,16 @@ recipe_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -L)"
 source "${recipe_dir}/image.env"
 
 : "${K3_VLLM_SITE:?image.env must define the K3 vLLM site}"
+: "${K3_VLLM_OVERLAY_SOURCE:?image.env must define the source vLLM overlay}"
 patch_file="${recipe_dir}/vllm-k3-routed-stream-threshold.patch"
+
+if [[ ! -e "${K3_VLLM_OVERLAY}" ]]; then
+  cp -a "${K3_VLLM_OVERLAY_SOURCE}" "${K3_VLLM_OVERLAY}"
+fi
+if [[ ! -d "${K3_VLLM_SITE}/vllm" ]]; then
+  echo "FATAL private K3 vLLM overlay is incomplete: ${K3_VLLM_SITE}" >&2
+  exit 2
+fi
 
 if patch --dry-run --silent -p1 -d "${K3_VLLM_SITE}" <"${patch_file}"; then
   patch --silent -p1 -d "${K3_VLLM_SITE}" <"${patch_file}"

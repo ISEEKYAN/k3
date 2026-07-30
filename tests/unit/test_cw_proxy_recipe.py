@@ -14,8 +14,10 @@ def test_image_contract_reuses_the_proven_k3_vllm_overlay():
 
     assert "K3_TRAINING_IMAGE=" in image
     assert "pytorch_26.04-py3.sqsh" in image
+    assert "K3_VLLM_OVERLAY_SOURCE=" in image
     assert "K3_VLLM_OVERLAY=" in image
     assert "k3-vllm-main-prs-overlay" in image
+    assert "k3-vllm-overlay-r1" in image
     assert 'K3_VLLM_SITE="${K3_VLLM_OVERLAY}/lib/python3.12/site-packages"' in image
     assert "qwen35-cp-overlay-20260613/site" in image
     assert "nvidia_cutlass_dsl/python_packages" in image
@@ -115,6 +117,7 @@ def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     assert "_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD = 256" in patch_text
     assert "envs.VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD" in patch_text
     assert "if num_tokens <= _ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD" in patch_text
+    assert 'cp -a "${K3_VLLM_OVERLAY_SOURCE}" "${K3_VLLM_OVERLAY}"' in prepare
     assert 'patch --dry-run --silent -p1 -d "${K3_VLLM_SITE}"' in prepare
     assert 'patch --dry-run --silent --reverse -p1 -d "${VLLM_SITE}"' in env
     assert 'mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)' in env
