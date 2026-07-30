@@ -34,6 +34,7 @@ def assert_runtime_package_paths() -> dict[str, object]:
 
     vllm_site = Path(os.environ["VLLM_SITE"]).absolute()
     tensordict_site = Path(os.environ["TENSORDICT_SITE"]).absolute()
+    hydra_site = Path(os.environ["HYDRA_SITE"]).absolute()
     base_site = Path(os.environ["VERL_DEPS_SITE"]).absolute()
     expected_modules = {
         "huggingface_hub": ("huggingface_hub", base_site),
@@ -44,6 +45,9 @@ def assert_runtime_package_paths() -> dict[str, object]:
         "ray": ("ray", vllm_site),
         "tensordict": ("tensordict", tensordict_site),
         "pyvers": ("pyvers", tensordict_site),
+        "hydra": ("hydra", hydra_site),
+        "omegaconf": ("omegaconf", hydra_site),
+        "antlr4": ("antlr4", hydra_site),
     }
     resolved: dict[str, str] = {}
     for label, (module_name, expected_site) in expected_modules.items():

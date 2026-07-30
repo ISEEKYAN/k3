@@ -15,8 +15,9 @@ source "${recipe_dir}/image.env"
 : "${VLLM_SITE:=${K3_VLLM_SITE}}"
 : "${CUTLASS_DSL_SITE:=${K3_CUTLASS_DSL_SITE}}"
 : "${TENSORDICT_SITE:=${K3_TENSORDICT_SITE}}"
+: "${HYDRA_SITE:=${K3_HYDRA_SITE}}"
 export \
-  MEGATRON_ROOT FLA_SITE VLLM_SITE CUTLASS_DSL_SITE TENSORDICT_SITE \
+  MEGATRON_ROOT FLA_SITE VLLM_SITE CUTLASS_DSL_SITE TENSORDICT_SITE HYDRA_SITE \
   MLITE_SOURCE_SHA
 
 assert_source_sha() {
@@ -49,7 +50,7 @@ export CUDA_HOME=/usr/local/cuda
 export PATH="/usr/local/bin:/usr/bin:/bin:${CUDA_HOME}/bin"
 export LD_LIBRARY_PATH="/usr/local/cuda/compat/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export MLITE_K3_AUTO_REGISTER=1
-export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:${CUTLASS_DSL_SITE}:${recipe_dir}:${K3_ROOT}/src:${MEGATRON_ROOT}:${VERL_ROOT}:${VERL_DEPS_SITE}:${MLITE_ROOT}/experimental/lite/examples/verl:${MLITE_ROOT}/experimental/lite"
+export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:${CUTLASS_DSL_SITE}:${recipe_dir}:${K3_ROOT}/src:${MEGATRON_ROOT}:${VERL_ROOT}:${VERL_DEPS_SITE}:${MLITE_ROOT}/experimental/lite/examples/verl:${MLITE_ROOT}/experimental/lite:${HYDRA_SITE}"
 
 python_bin=$(command -v python3)
 python_version=$("${python_bin}" -c 'import platform; print(platform.python_version())')

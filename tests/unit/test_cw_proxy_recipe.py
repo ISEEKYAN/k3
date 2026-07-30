@@ -54,7 +54,7 @@ def test_training_environment_preserves_three_pollution_boundaries():
         "${FLA_SITE}:${CUTLASS_DSL_SITE}:${recipe_dir}:${K3_ROOT}/src:"
         "${MEGATRON_ROOT}:${VERL_ROOT}:${VERL_DEPS_SITE}:"
         "${MLITE_ROOT}/experimental/lite/examples/verl:"
-        '${MLITE_ROOT}/experimental/lite"'
+        '${MLITE_ROOT}/experimental/lite:${HYDRA_SITE}"'
     ) in env
     assert "CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH" in env
     assert "CC CXX CFLAGS CPPFLAGS CXXFLAGS LDFLAGS" in env
@@ -256,18 +256,20 @@ def test_ray_cuda_environment_gate_checks_a_gpu_actor():
     assert '"CUDA_VISIBLE_DEVICES" in os.environ' in gate
     assert "assert_runtime_package_paths" in gate
     assert '"PYTHONPATH": os.environ["PYTHONPATH"]' in gate
+    assert '"HYDRA_SITE": os.environ["HYDRA_SITE"]' in gate
     assert "K3_RAY_CUDA_ENV_OK" in gate
 
 
-def test_container_python_and_tensordict_site_fail_loud():
+def test_container_python_and_narrow_dependency_sites_fail_loud():
     image = read("image.env")
     env = read("k3_training_env.sh")
     validate = read("assert_runtime_package_paths.py")
 
     assert "K3_TENSORDICT_SITE=" in image
     assert "K3_PYVERS_SITE=" not in image
-    assert "K3_HYDRA_SITE=" not in image
+    assert "K3_HYDRA_SITE=" in image
     assert 'export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:' in env
+    assert '${MLITE_ROOT}/experimental/lite:${HYDRA_SITE}"' in env
     for package in (
         "huggingface_hub",
         "transformers",
@@ -276,6 +278,9 @@ def test_container_python_and_tensordict_site_fail_loud():
         "tensordict",
         "ray",
         "pyvers",
+        "hydra",
+        "omegaconf",
+        "antlr4",
     ):
         assert package in validate
     assert '"0.10.0"' in validate
