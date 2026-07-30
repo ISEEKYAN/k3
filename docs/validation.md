@@ -153,6 +153,45 @@ materializing the full release in one process. Require:
 
 Synthetic round trips alone do not satisfy this stage.
 
+#### Complete-checkpoint validation command
+
+Run the fail-closed validator against a shared, complete checkout of the pinned
+release:
+
+```bash
+PYTHONPATH=<Megatron-Lite experimental/lite>:src \
+  python -m mlite_k3.checkpoint_validation /shared/Kimi-K3 \
+  --output ./k3-checkpoint-validation.json
+```
+
+The command verifies the frozen config and index SHA-256 values before opening
+weights. It then visits every mapped logical parameter, applies the exact
+public-to-native layout transform and its inverse, and compares shape, dtype,
+and raw bytes. It retains one logical tensor group at a time. The JSON report
+is atomically created only after the complete traversal succeeds.
+
+The structural sample is deterministic: include the first and last layer,
+every MLA layer and its adjacent KDA boundaries, and expert positions
+`0, 223, 447, 671, 895`. This covers dense/MoE and KDA/MLA transitions across
+the 93-layer schedule without claiming that a sample replaces the all-key
+checkpoint traversal.
+
+The report carries this independent structure-by-capability matrix:
+
+| Structure | Load | Save | BF16 export | MXFP4 export | Canonical QAT | Shard rules |
+| --- | --- | --- | --- | --- | --- | --- |
+| dense | covered | covered | covered | BF16 passthrough | excluded by contract | plain |
+| routed MoE | covered | covered | covered | packed + scale | covered | pair co-location |
+| MLA | covered | covered | covered | BF16 passthrough | excluded by contract | plain |
+| KDA | covered | covered | covered | BF16 passthrough | excluded by contract | plain |
+| shared expert | covered | covered | covered | BF16 passthrough | excluded by contract | plain |
+| router + expert bias | covered | covered | covered | BF16 passthrough | excluded by contract | plain |
+| MTP | out of scope | out of scope | out of scope | out of scope | out of scope | out of scope |
+
+Repository unit tests exercise the validator with real safetensors APIs and
+small fixtures. They are regression coverage only: a report from the complete
+1.56-TB release is required before claiming complete-checkpoint equality.
+
 ### Stage 4: scheduled GPU paths
 
 **Deferred / not done in the first release.** Expert parallelism, context

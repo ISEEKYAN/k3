@@ -62,10 +62,6 @@ def _deterministic_hf_reader(
         ).reshape(parameter.shape)
         if native_name.endswith(".gate_up.weight"):
             source_values = values.chunk(2, dim=0)
-        elif native_name.endswith(
-            (".q_conv1d.conv.weight", ".k_conv1d.conv.weight", ".v_conv1d.conv.weight")
-        ):
-            source_values = (values.squeeze(1),)
         else:
             source_values = (values,)
         tensors.update(zip(source_names, source_values, strict=True))

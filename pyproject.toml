@@ -20,6 +20,9 @@ classifiers = [
 test = ["pytest>=8"]
 kda = ["flash-linear-attention>=0.5.0"]
 
+[project.scripts]
+k3-validate-checkpoint = "mlite_k3.checkpoint_validation:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
