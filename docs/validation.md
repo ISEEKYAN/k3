@@ -172,19 +172,21 @@ is atomically created only after the complete traversal succeeds.
 
 The report does not infer capability coverage from that traversal. Without an
 execution-evidence manifest, every in-scope capability cell is emitted as
-`not-covered`. A unified test may provide a JSON mapping from
-`structure.capability` to one or more `test:` or `job:` identifiers:
+`not-covered`. A unified test must use the validation harness to produce a
+fingerprinted evidence bundle from its run artifacts and Slurm accounting:
 
 ```bash
 PYTHONPATH=<Megatron-Lite experimental/lite>:src \
   python -m mlite_k3.checkpoint_validation /shared/Kimi-K3 \
   --output ./k3-checkpoint-validation.json \
-  --evidence-manifest ./k3-executed-evidence.json
+  --evidence-bundle ./k3-executed-evidence.json
 ```
 
-Unknown cells, empty evidence lists, and sources without a `test:` or `job:`
-identifier fail loudly. The validator never substitutes descriptive prose for
-an execution identifier.
+Plain hand-written capability mappings are not accepted. The bundle verifier
+checks the harness schema and fingerprint, run-record fingerprint, stdout and
+stderr digests, the expected test and success marker, exact git commit, and a
+`sacct` row with `COMPLETED` plus `0:0`. Capability and axis sources are then
+derived from the registered tier rather than read from user-authored claims.
 
 The structural sample is deterministic: include the first and last layer,
 every MLA layer and its adjacent KDA boundaries, and expert positions
@@ -193,6 +195,29 @@ the 93-layer schedule without claiming that a sample replaces the all-key
 checkpoint traversal.
 
 With no evidence manifest, the matrix is deliberately:
+
+<!-- K3_CAPABILITY_SCHEMA_BEGIN -->
+```json
+{
+  "capabilities": [
+    "load",
+    "save",
+    "export_bf16",
+    "export_mxfp4",
+    "qat_canonical",
+    "shard_rules"
+  ],
+  "structures": [
+    "dense",
+    "moe",
+    "mla",
+    "kda",
+    "shared_expert",
+    "router_expert_bias"
+  ]
+}
+```
+<!-- K3_CAPABILITY_SCHEMA_END -->
 
 | Structure | Load | Save | BF16 export | MXFP4 export | Canonical QAT | Shard rules |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -253,6 +278,55 @@ matrix is rerun for the exact release commit and its public test IDs are added
 to the manifest above. Full-scale checkpoint training and a short
 optimizer-backed train remain deferred. FlashKDA direct dispatch is also not
 done; the approved training path is FLA `chunk_kda`.
+
+### Unified validation harness
+
+The harness makes the reduced checkpoint import/export test the first-class
+distributed gate. Its tiers deliberately do not require a four-node allocation
+to establish TP/EP gather correctness:
+
+| Tier | Nodes / tasks | Partition | Purpose | Blocking |
+| --- | ---: | --- | --- | --- |
+| `checkpoint_gather_1n` | 1 / 8 | `interactive` | single-node TP2/EP2/PP2 versus single-rank bitwise export, QAT key parity, persistent-buffer coverage | yes |
+| `checkpoint_gather_2n` | 2 / 8 | `interactive` | the same topology distributed across two nodes, exercising cross-node collectives | yes |
+| `checkpoint_scale_4n` | 4 / 8 | `batch_short` | scale confirmation only; queue delay does not block correctness evidence | no |
+
+Inspect a tier before scheduling:
+
+```bash
+python -m mlite_k3.validation_harness plan checkpoint_gather_1n
+```
+
+Inside the matching Slurm allocation, wrap the exact checkpoint smoke command.
+The harness owns stdout/stderr capture, wall duration, return code, git commit,
+job ID, node count, partition, and the fingerprinted run record:
+
+```bash
+python -m mlite_k3.validation_harness run \
+  --tier checkpoint_gather_1n \
+  --artifact-dir ./artifacts/checkpoint_gather_1n \
+  -- torchrun --standalone --nproc-per-node=8 \
+  tests/gpu/test_checkpoint_load_smoke.py
+```
+
+After the job reaches a terminal state, finalize from a scheduler client. This
+queries `sacct`; it refuses any state other than `COMPLETED`, any exit code
+other than `0:0`, a mismatched partition/node count, a missing test success
+marker, a changed artifact digest, or a run from a different git commit:
+
+```bash
+python -m mlite_k3.validation_harness finalize \
+  --run-dir ./artifacts/checkpoint_gather_1n \
+  --output ./artifacts/k3-evidence.json
+
+python -m mlite_k3.validation_harness verify \
+  ./artifacts/k3-evidence.json
+```
+
+Capability cells and axes are registered with the tier in code and are emitted
+only after finalization succeeds. The bundle contains relative references to
+the fingerprinted run record and `sacct` artifact; copying or editing only the
+top-level JSON cannot manufacture coverage.
 
 ## Evidence and publication rules
 

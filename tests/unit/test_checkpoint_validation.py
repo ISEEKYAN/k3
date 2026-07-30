@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,15 @@ from mlite_k3.checkpoint_validation import (
 )
 from mlite_k3.config import K3Config
 from mlite_k3.lite.checkpoint import K3WeightSpec
+from mlite_k3.lite.checkpoint import (
+    K3CheckpointManifest,
+    K3QuantizationMetadata,
+    WeightIndexAudit,
+)
+from mlite_k3.validation_harness import (
+    finalize_evidence_bundle,
+    write_run_record,
+)
 
 
 class _Reader:
@@ -49,9 +59,9 @@ def _plain_checkpoint(spec: K3WeightSpec) -> dict[str, torch.Tensor]:
             ):
                 tensor = torch.arange(12, dtype=torch.bfloat16).reshape(4, 1, 3)
             elif source_name.endswith((".w1.weight", ".w3.weight")):
-                tensor = torch.arange(8, dtype=torch.bfloat16).reshape(2, 4)
+                tensor = torch.arange(64, dtype=torch.bfloat16).reshape(2, 32)
             elif source_name.endswith(".w2.weight"):
-                tensor = torch.arange(8, dtype=torch.bfloat16).reshape(4, 2)
+                tensor = torch.arange(1024, dtype=torch.bfloat16).reshape(32, 32)
             else:
                 tensor = torch.tensor([len(tensors)], dtype=torch.bfloat16)
             tensors[source_name] = tensor
@@ -141,6 +151,68 @@ def test_reader_roundtrip_checks_every_mapped_source_shape_dtype_and_bits():
     assert summary["dtypes"] == {"torch.bfloat16": len(tensors)}
 
 
+def test_reader_roundtrip_uses_manifest_aware_mxfp4_mapping():
+    from mlite_k3.lite import checkpoint
+
+    plain_spec = K3WeightSpec(_TinyConfig())
+    physical = dict(
+        checkpoint._export_mxfp4_weights(iter(_plain_checkpoint(plain_spec).items()))
+    )
+    manifest = K3CheckpointManifest(
+        quantization=K3QuantizationMetadata(
+            format="mxfp4-pack-quantized",
+            group_size=32,
+            num_bits=4,
+            scale_dtype="torch.uint8",
+            ignored_modules=frozenset(),
+        ),
+        weights=WeightIndexAudit(quantized_weights=18, plain_tensors=0, shards=1),
+    )
+    spec = K3WeightSpec(_TinyConfig(), manifest=manifest)
+
+    summary = validate_reader_roundtrip(_Reader(physical), spec)
+
+    assert summary["source_tensors"] == len(physical)
+    assert "torch.int8" in summary["dtypes"]
+    assert "torch.uint8" in summary["dtypes"]
+
+
+def test_manifest_validation_catches_physical_layout_plain_spec_misses():
+    plain_spec = K3WeightSpec(_TinyConfig())
+    logical = _plain_checkpoint(plain_spec)
+    manifest = K3CheckpointManifest(
+        quantization=K3QuantizationMetadata(
+            format="mxfp4-pack-quantized",
+            group_size=32,
+            num_bits=4,
+            scale_dtype="torch.uint8",
+            ignored_modules=frozenset(),
+        ),
+        weights=WeightIndexAudit(quantized_weights=18, plain_tensors=0, shards=1),
+    )
+    manifest_spec = K3WeightSpec(_TinyConfig(), manifest=manifest)
+    physical = {
+        source_name: torch.zeros(1, dtype=torch.uint8)
+        for source_names in manifest_spec.weight_map().values()
+        for source_name in source_names
+        if source_name.endswith(("_packed", "_scale"))
+    }
+    first_expert = next(
+        native_name
+        for native_name in sorted(manifest_spec.weight_map())
+        if manifest_spec.is_expert(native_name)
+    )
+    packed_name = manifest_spec.weight_map()[first_expert][0]
+    physical[packed_name] = physical[packed_name].to(torch.float32)
+    tensors = logical | physical
+
+    plain_summary = validate_reader_roundtrip(_Reader(tensors), plain_spec)
+
+    assert plain_summary["bitwise_equal"] is True
+    with pytest.raises(TypeError, match="MXFP4 packed tensor must be uint8/int8"):
+        validate_reader_roundtrip(_Reader(tensors), manifest_spec)
+
+
 def _write_real_safetensors_checkpoint(tmp_path, spec, monkeypatch):
     tensors = _plain_checkpoint(spec)
     shard_name = "model-00001-of-00001.safetensors"
@@ -177,11 +249,12 @@ def _write_real_safetensors_checkpoint(tmp_path, spec, monkeypatch):
         checkpoint_validation,
         "inspect_hf_checkpoint",
         lambda _root: SimpleNamespace(
+            quantization=SimpleNamespace(format="plain"),
             weights=SimpleNamespace(
                 quantized_weights=0,
                 plain_tensors=len(tensors),
                 shards=1,
-            )
+            ),
         ),
     )
 
@@ -229,5 +302,113 @@ def test_successful_report_uses_real_safetensors_and_has_no_unevidenced_coverage
     )
 
 
+def test_validator_constructs_the_same_manifest_aware_spec_as_production_load(
+    tmp_path, monkeypatch
+):
+    original_spec = K3WeightSpec
+    spec = original_spec(_TinyConfig())
+    _write_real_safetensors_checkpoint(tmp_path, spec, monkeypatch)
+    constructed_manifests = []
+
+    class _RecordingSpec(original_spec):
+        def __init__(self, config, *, manifest=None):
+            constructed_manifests.append(manifest)
+            super().__init__(config, manifest=manifest)
+
+    monkeypatch.setattr(checkpoint_validation, "K3WeightSpec", _RecordingSpec)
+
+    validate_checkpoint(tmp_path, tmp_path / "summary.json")
+
+    assert len(constructed_manifests) == 1
+    assert constructed_manifests[0] is not None
+
+
+def test_report_accepts_only_harness_verified_execution_evidence(tmp_path, monkeypatch):
+    spec = K3WeightSpec(_TinyConfig())
+    _write_real_safetensors_checkpoint(tmp_path, spec, monkeypatch)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "stdout.log").write_text(
+        'K3_CHECKPOINT_LOAD_SMOKE={"world_size": 8}\n',
+        encoding="utf-8",
+    )
+    (run_dir / "stderr.log").write_text("", encoding="utf-8")
+    write_run_record(
+        run_dir,
+        tier="checkpoint_gather_1n",
+        command=[
+            "torchrun",
+            "--nproc-per-node=8",
+            "tests/gpu/test_checkpoint_load_smoke.py",
+        ],
+        returncode=0,
+        duration_seconds=3.0,
+        git_commit="verified-commit",
+        slurm_job_id="12345",
+        slurm_nodes=1,
+        slurm_partition="interactive",
+    )
+    bundle_path = tmp_path / "evidence.json"
+    finalize_evidence_bundle(
+        [run_dir],
+        bundle_path,
+        sacct_query=lambda _job_id: "12345|COMPLETED|0:0|4|interactive\n",
+    )
+    monkeypatch.setattr(
+        checkpoint_validation,
+        "_current_git_commit",
+        lambda: "verified-commit",
+    )
+
+    report = validate_checkpoint(
+        tmp_path,
+        tmp_path / "summary.json",
+        evidence_bundle=bundle_path,
+    )
+
+    rows = {
+        row["structure"]: row["cells"] for row in report["coverage"]["matrix"]["rows"]
+    }
+    assert rows["moe"]["export_bf16"]["status"] == "covered"
+    assert all(
+        source.startswith(("test:", "job:"))
+        for source in rows["moe"]["export_bf16"]["evidence"]
+    )
+    assert set(report["coverage"]["axes"]) == {"tp", "ep", "pp"}
+    assert report["coverage"]["runs"][0]["job_id"] == "12345"
+
+
 def test_public_report_writer_cannot_bypass_checkpoint_audit():
     assert not hasattr(checkpoint_validation, "write_validation_report")
+
+
+def test_capability_schema_cannot_drift_from_documentation():
+    validation_doc = (Path(__file__).parents[2] / "docs/validation.md").read_text(
+        encoding="utf-8"
+    )
+
+    checkpoint_validation._assert_capability_doc_contract(validation_doc)
+
+
+def test_capability_schema_drift_fails_loudly():
+    validation_doc = (Path(__file__).parents[2] / "docs/validation.md").read_text(
+        encoding="utf-8"
+    )
+    drifted = validation_doc.replace('"load",', '"imaginary",', 1)
+
+    with pytest.raises(RuntimeError, match="capability schema drift"):
+        checkpoint_validation._assert_capability_doc_contract(drifted)
+
+
+def test_capability_table_drift_fails_loudly():
+    validation_doc = (Path(__file__).parents[2] / "docs/validation.md").read_text(
+        encoding="utf-8"
+    )
+    drifted = validation_doc.replace(
+        "| dense | not-covered",
+        "| dense | covered",
+        1,
+    )
+
+    with pytest.raises(RuntimeError, match="capability table drift"):
+        checkpoint_validation._assert_capability_doc_contract(drifted)

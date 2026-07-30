@@ -6,6 +6,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import subprocess
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -20,6 +22,7 @@ from mlite_k3.lite.checkpoint import (
     get_hf_weight,
     inspect_hf_checkpoint,
 )
+from mlite_k3.validation_schema import CAPABILITIES, STRUCTURES
 
 
 KIMI_K3_REVISION = "9f62e4e9fffbd0a83ddd60e1c209d828994b3569"
@@ -30,21 +33,11 @@ KIMI_K3_INDEX_SHA256 = (
     "a1c5210650ce71d2d3ae9ec5a101ac4afd3cf4b10091be589853437eb967febd"
 )
 
-_CAPABILITIES = (
-    "load",
-    "save",
-    "export_bf16",
-    "export_mxfp4",
-    "qat_canonical",
-    "shard_rules",
-)
-_STRUCTURES = (
-    "dense",
-    "moe",
-    "mla",
-    "kda",
-    "shared_expert",
-    "router_expert_bias",
+_CAPABILITY_DOC_CONTRACT = re.compile(
+    r"<!-- K3_CAPABILITY_SCHEMA_BEGIN -->\s*"
+    r"```json\s*(\{.*?\})\s*```\s*"
+    r"<!-- K3_CAPABILITY_SCHEMA_END -->",
+    re.DOTALL,
 )
 
 
@@ -57,8 +50,8 @@ def _normalize_capability_evidence(
     }
     valid_keys = {
         f"{structure}.{capability}"
-        for structure in _STRUCTURES
-        for capability in _CAPABILITIES
+        for structure in STRUCTURES
+        for capability in CAPABILITIES
     }
     unknown = sorted(set(normalized) - valid_keys)
     missing_sources = sorted(key for key, sources in normalized.items() if not sources)
@@ -83,9 +76,9 @@ def build_capability_matrix(
     """Derive coverage cells exclusively from traceable execution evidence."""
     normalized = _normalize_capability_evidence(evidence)
     rows = []
-    for structure in _STRUCTURES:
+    for structure in STRUCTURES:
         cells = {}
-        for capability in _CAPABILITIES:
+        for capability in CAPABILITIES:
             sources = normalized.get(f"{structure}.{capability}", ())
             cells[capability] = {
                 "status": "covered" if sources else "not-covered",
@@ -93,7 +86,59 @@ def build_capability_matrix(
             }
         rows.append({"structure": structure, "cells": cells})
 
-    return {"columns": list(_CAPABILITIES), "rows": rows}
+    return {"columns": list(CAPABILITIES), "rows": rows}
+
+
+def _assert_capability_doc_contract(contents: str) -> None:
+    match = _CAPABILITY_DOC_CONTRACT.search(contents)
+    if match is None:
+        raise RuntimeError("docs/validation.md is missing the capability schema")
+    documented = json.loads(match.group(1))
+    expected = {
+        "capabilities": list(CAPABILITIES),
+        "structures": list(STRUCTURES),
+    }
+    if documented != expected:
+        raise RuntimeError(
+            f"capability schema drift: runtime={expected}, docs={documented}"
+        )
+    header = (
+        "| Structure | Load | Save | BF16 export | MXFP4 export | "
+        "Canonical QAT | Shard rules |"
+    )
+    lines = contents.splitlines()
+    try:
+        start = lines.index(header)
+    except ValueError as error:
+        raise RuntimeError(
+            "docs/validation.md is missing the capability table"
+        ) from error
+    table_rows = []
+    for line in lines[start + 2 :]:
+        if not line.startswith("|"):
+            break
+        table_rows.append([cell.strip() for cell in line.strip("|").split("|")])
+    labels = {
+        "dense": "dense",
+        "routed MoE": "moe",
+        "MLA": "mla",
+        "KDA": "kda",
+        "shared expert": "shared_expert",
+        "router + expert bias": "router_expert_bias",
+    }
+    documented_rows = {
+        labels[row[0]]: row[1:] for row in table_rows if row and row[0] in labels
+    }
+    runtime_rows = {
+        row["structure"]: [
+            row["cells"][capability]["status"] for capability in CAPABILITIES
+        ]
+        for row in build_capability_matrix()["rows"]
+    }
+    if documented_rows != runtime_rows:
+        raise RuntimeError(
+            f"capability table drift: runtime={runtime_rows}, docs={documented_rows}"
+        )
 
 
 def build_structural_samples(config: Any) -> dict[str, Any]:
@@ -153,16 +198,22 @@ def validate_reader_roundtrip(reader: Any, spec: K3WeightSpec) -> dict[str, Any]
 
     for native_name in sorted(mapping):
         hf_names = mapping[native_name]
-        expected = [get_hf_weight(reader, name) for name in hf_names]
-        native = spec.hf_to_native(native_name, expected)
+        physical = [reader.get_tensor(name) for name in hf_names]
+        native = spec.hf_to_native(native_name, physical)
         restored = spec.native_to_hf(native_name, native)
-        if [name for name, _ in restored] != hf_names:
+        logical_names = list(
+            dict.fromkeys(
+                name.removesuffix("_packed").removesuffix("_scale") for name in hf_names
+            )
+        )
+        if [name for name, _ in restored] != logical_names:
             raise AssertionError(
                 f"name mismatch for {native_name!r}: "
-                f"{[name for name, _ in restored]!r} != {hf_names!r}"
+                f"{[name for name, _ in restored]!r} != {logical_names!r}"
             )
+        expected = [get_hf_weight(reader, name) for name in logical_names]
         for source_name, source, (_, actual) in zip(
-            hf_names, expected, restored, strict=True
+            logical_names, expected, restored, strict=True
         ):
             if source.shape != actual.shape:
                 raise AssertionError(
@@ -176,10 +227,11 @@ def validate_reader_roundtrip(reader: Any, spec: K3WeightSpec) -> dict[str, Any]
                 )
             if not _bitwise_equal(source, actual):
                 raise AssertionError(f"bitwise mismatch for {source_name!r}")
+        for source_name, source in zip(hf_names, physical, strict=True):
             if source_name not in source_keys:
                 source_keys.add(source_name)
                 dtypes[str(source.dtype)] += 1
-        del actual, expected, native, restored, source
+        del actual, expected, native, physical, restored, source
 
     ordered_keys = sorted(source_keys)
     return {
@@ -210,11 +262,26 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _current_git_commit() -> str:
+    root = Path(__file__).resolve().parents[2]
+    try:
+        return subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            "cannot verify evidence bundle commit outside a git checkout"
+        ) from error
+
+
 def validate_checkpoint(
     path: str | Path,
     output: str | Path,
     *,
-    capability_evidence: Mapping[str, Sequence[str]] | None = None,
+    evidence_bundle: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate the pinned complete release without retaining multiple shards."""
     root = Path(path)
@@ -240,8 +307,19 @@ def validate_checkpoint(
     from megatron.lite.primitive.ckpt.hf_weights import SafeTensorReader
 
     reader = SafeTensorReader(str(root))
-    spec = K3WeightSpec(config)
+    spec = K3WeightSpec(config, manifest=manifest)
     mapped_sources = audit_k3_weight_spec_sources(spec, reader.index)
+    verified_evidence = None
+    if evidence_bundle is not None:
+        from mlite_k3.validation_harness import load_evidence_bundle
+
+        verified_evidence = load_evidence_bundle(evidence_bundle)
+        current_commit = _current_git_commit()
+        if verified_evidence.git_commit != current_commit:
+            raise RuntimeError(
+                "evidence bundle commit does not match validator commit: "
+                f"evidence={verified_evidence.git_commit}, current={current_commit}"
+            )
     checkpoint = validate_reader_roundtrip(reader, spec)
     checkpoint.update(
         {
@@ -259,7 +337,11 @@ def validate_checkpoint(
         "checkpoint": checkpoint,
         "coverage": {
             "samples": build_structural_samples(config),
-            "matrix": build_capability_matrix(capability_evidence),
+            "matrix": build_capability_matrix(
+                None if verified_evidence is None else verified_evidence.capabilities
+            ),
+            "axes": ({} if verified_evidence is None else verified_evidence.axes),
+            "runs": ([] if verified_evidence is None else verified_evidence.runs),
         },
     }
     _write_json_atomically(Path(output), report)
@@ -273,21 +355,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("checkpoint", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--evidence-manifest",
+        "--evidence-bundle",
         type=Path,
-        help="JSON mapping of structure.capability to test:/job: execution IDs",
+        help="fingerprinted bundle generated by mlite_k3.validation_harness",
     )
     args = parser.parse_args(argv)
-    evidence = None
-    if args.evidence_manifest is not None:
-        with args.evidence_manifest.open(encoding="utf-8") as stream:
-            evidence = json.load(stream)
-        if not isinstance(evidence, Mapping):
-            parser.error("--evidence-manifest must contain a JSON object")
     validate_checkpoint(
         args.checkpoint,
         args.output,
-        capability_evidence=evidence,
+        evidence_bundle=args.evidence_bundle,
     )
     return 0
 
