@@ -13,8 +13,9 @@ from pathlib import Path
 def assert_runtime_package_paths() -> dict[str, object]:
     vllm_site = Path(os.environ["VLLM_SITE"]).absolute()
     tensordict_site = Path(os.environ["TENSORDICT_SITE"]).absolute()
+    base_site = Path(os.environ["VERL_DEPS_SITE"]).absolute()
     expected_sites = {
-        "huggingface_hub": vllm_site,
+        "huggingface_hub": base_site,
         "transformers": vllm_site,
         "vllm": vllm_site,
         "vllm._C": vllm_site,
