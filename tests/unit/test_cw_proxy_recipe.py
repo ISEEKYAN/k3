@@ -234,6 +234,11 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
         'bash "${MLITE_ROOT}/experimental/lite/examples/verl/scripts/'
         'run_qwen3moe_gsm8k_grpo.sh"'
     )
+    assert 'python3 "${recipe_dir}/prepare_vllm_overlay_deps.py"' in runner
+    assert 'python3 "${recipe_dir}/assert_runtime_package_paths.py"' in runner
+    assert runner.index('python3 "${recipe_dir}/assert_runtime_package_paths.py"') < (
+        runner.index("python3 -m ray.scripts.scripts start --head")
+    )
 
 
 def test_ray_cuda_environment_gate_checks_a_gpu_actor():
@@ -243,6 +248,26 @@ def test_ray_cuda_environment_gate_checks_a_gpu_actor():
     assert '"ROCR_VISIBLE_DEVICES" not in os.environ' in gate
     assert '"CUDA_VISIBLE_DEVICES" in os.environ' in gate
     assert "K3_RAY_CUDA_ENV_OK" in gate
+
+
+def test_overlay_dependency_bridge_is_narrow_and_fail_loud():
+    image = read("image.env")
+    prepare = read("prepare_vllm_overlay_deps.py")
+    validate = read("assert_runtime_package_paths.py")
+
+    assert "K3_SM90_SITE=" in image
+    assert '"tensordict", "tensordict-0.10.0.dist-info"' in prepare
+    assert "unexpected existing overlay asset" in prepare
+    for package in (
+        "huggingface_hub",
+        "transformers",
+        "vllm",
+        "vllm._C",
+        "tensordict",
+    ):
+        assert package in validate
+    assert '"0.10.0"' in validate
+    assert "K3_RUNTIME_PACKAGE_PATHS_OK" in validate
 
 
 def test_ray_startup_probe_is_a_zero_gpu_full_environment_gate():
