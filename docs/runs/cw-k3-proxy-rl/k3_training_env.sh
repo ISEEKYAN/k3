@@ -100,12 +100,20 @@ else
 fi
 
 export K3_JIT_CACHE_FINGERPRINT="${fingerprint}"
+export HOME="${cache_dir}/home"
+export XDG_CACHE_HOME="${cache_dir}/xdg"
+export FLASHINFER_WORKSPACE_BASE="${cache_dir}/flashinfer"
+export VLLM_CACHE_ROOT="${cache_dir}/vllm"
 export TRITON_CACHE_DIR="${cache_dir}/triton"
 export TORCHINDUCTOR_CACHE_DIR="${cache_dir}/torchinductor"
 export TILELANG_CACHE_DIR="${cache_dir}/tilelang"
 export TILELANG_TMP_DIR="${cache_dir}/tilelang-tmp"
 export PYTHONPYCACHEPREFIX="${cache_dir}/pycache"
 mkdir -p \
+  "${HOME}" \
+  "${XDG_CACHE_HOME}" \
+  "${FLASHINFER_WORKSPACE_BASE}" \
+  "${VLLM_CACHE_ROOT}" \
   "${TRITON_CACHE_DIR}" \
   "${TORCHINDUCTOR_CACHE_DIR}" \
   "${TILELANG_CACHE_DIR}" \

@@ -64,6 +64,10 @@ def test_jit_cache_is_persistent_keyed_and_fail_loud():
     assert "gpu_cc" in env
     assert "TRITON_CACHE_DIR" in env
     assert "TORCHINDUCTOR_CACHE_DIR" in env
+    assert "FLASHINFER_WORKSPACE_BASE" in env
+    assert "VLLM_CACHE_ROOT" in env
+    assert 'HOME="${cache_dir}/home"' in env
+    assert 'XDG_CACHE_HOME="${cache_dir}/xdg"' in env
     assert "FATAL JIT cache fingerprint mismatch" in env
     assert "runtime_image_fingerprint" in env
     assert "TILELANG_CACHE_DIR" in env
