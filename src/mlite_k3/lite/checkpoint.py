@@ -867,6 +867,19 @@ def save_hf_weights(
 
     result = None
     if rank == 0:
+        audit_kwargs = (
+            {
+                "num_hidden_layers": int(config.num_hidden_layers),
+                "first_k_dense_replace": int(config.first_k_dense_replace),
+                "num_experts": int(config.num_experts),
+            }
+            if target == "mxfp4"
+            else {}
+        )
+        result = audit_k3_weight_index(
+            {"weight_map": index},
+            **audit_kwargs,
+        )
         _write_json_atomically(
             root / "model.safetensors.index.json",
             {
@@ -874,7 +887,6 @@ def save_hf_weights(
                 "weight_map": index,
             },
         )
-        result = audit_k3_weight_index({"weight_map": index})
     if torch.distributed.is_initialized():
         payload = [result]
         torch.distributed.broadcast_object_list(payload, src=0)

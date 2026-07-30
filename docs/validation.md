@@ -170,27 +170,47 @@ public-to-native layout transform and its inverse, and compares shape, dtype,
 and raw bytes. It retains one logical tensor group at a time. The JSON report
 is atomically created only after the complete traversal succeeds.
 
+The report does not infer capability coverage from that traversal. Without an
+execution-evidence manifest, every in-scope capability cell is emitted as
+`not-covered`. A unified test may provide a JSON mapping from
+`structure.capability` to one or more `test:` or `job:` identifiers:
+
+```bash
+PYTHONPATH=<Megatron-Lite experimental/lite>:src \
+  python -m mlite_k3.checkpoint_validation /shared/Kimi-K3 \
+  --output ./k3-checkpoint-validation.json \
+  --evidence-manifest ./k3-executed-evidence.json
+```
+
+Unknown cells, empty evidence lists, and sources without a `test:` or `job:`
+identifier fail loudly. The validator never substitutes descriptive prose for
+an execution identifier.
+
 The structural sample is deterministic: include the first and last layer,
 every MLA layer and its adjacent KDA boundaries, and expert positions
 `0, 223, 447, 671, 895`. This covers dense/MoE and KDA/MLA transitions across
 the 93-layer schedule without claiming that a sample replaces the all-key
 checkpoint traversal.
 
-The report carries this independent structure-by-capability matrix:
+With no evidence manifest, the matrix is deliberately:
 
 | Structure | Load | Save | BF16 export | MXFP4 export | Canonical QAT | Shard rules |
 | --- | --- | --- | --- | --- | --- | --- |
-| dense | covered | covered | covered | BF16 passthrough | excluded by contract | plain |
-| routed MoE | covered | covered | covered | packed + scale | covered | pair co-location |
-| MLA | covered | covered | covered | BF16 passthrough | excluded by contract | plain |
-| KDA | covered | covered | covered | BF16 passthrough | excluded by contract | plain |
-| shared expert | covered | covered | covered | BF16 passthrough | excluded by contract | plain |
-| router + expert bias | covered | covered | covered | BF16 passthrough | excluded by contract | plain |
-| MTP | out of scope | out of scope | out of scope | out of scope | out of scope | out of scope |
+| dense | not-covered | not-covered | not-covered | not-covered | not-covered | not-covered |
+| routed MoE | not-covered | not-covered | not-covered | not-covered | not-covered | not-covered |
+| MLA | not-covered | not-covered | not-covered | not-covered | not-covered | not-covered |
+| KDA | not-covered | not-covered | not-covered | not-covered | not-covered | not-covered |
+| shared expert | not-covered | not-covered | not-covered | not-covered | not-covered | not-covered |
+| router + expert bias | not-covered | not-covered | not-covered | not-covered | not-covered | not-covered |
 
-Repository unit tests exercise the validator with real safetensors APIs and
-small fixtures. They are regression coverage only: a report from the complete
-1.56-TB release is required before claiming complete-checkpoint equality.
+MTP is outside this package scope and therefore has no matrix row rather than
+a hard-coded coverage conclusion.
+
+Repository unit tests include one on-disk safetensors fixture that exercises
+the production reader and atomic report path. Lower-level transform tests use
+an in-memory reader. Both are regression coverage only: a report from the
+complete 1.56-TB release is required before claiming complete-checkpoint
+equality.
 
 ### Stage 4: scheduled GPU paths
 
@@ -199,10 +219,13 @@ parallelism, THD sequences, pipeline parallelism, and short training require
 K3-owned sharding, parameter placement, state-transfer, and communication work
 in this repository. They do not depend on a K3 primitive PR in Megatron Lite.
 
-`ModelBundle.extras["validated_axes"]` is derived only from the following
-machine-readable evidence manifest. Enabling a parallel dimension is not
-evidence. Every entry must name a public scheduler test ID; the runtime and
-this document are checked together and fail loudly if they drift.
+`ModelBundle.extras["validated_axes"]` is derived from
+`ImplConfig.validation_evidence` for that exact build. Enabling a parallel
+dimension is not evidence. Every entry must name a `test:` or `job:` execution
+identifier; unknown axes, empty lists, and untraceable strings fail loudly.
+When no per-run evidence is supplied, the following published default is used.
+The repository contract test checks that this documented default and the
+runtime default do not drift.
 
 <!-- K3_VALIDATED_AXIS_EVIDENCE_BEGIN -->
 ```json

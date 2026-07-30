@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -56,6 +57,7 @@ class ImplConfig:
     deterministic: bool = False
     kda_cp_mode: str = "headwise"
     qat: QATSpec | dict[str, Any] | None = None
+    validation_evidence: Mapping[str, tuple[str, ...]] | None = None
 
 
 def build_model_config(source: str | Path | dict, **overrides) -> K3Config:
@@ -75,16 +77,18 @@ def _resolve_validated_axes(
     dimensions: dict[str, int],
     *,
     use_thd: bool,
+    validation_evidence: Mapping[str, tuple[str, ...]] | None = None,
 ) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
-    unknown = sorted(set(_VALIDATED_AXIS_EVIDENCE) - set(_VALIDATION_AXES))
-    missing_sources = sorted(
-        axis for axis, sources in _VALIDATED_AXIS_EVIDENCE.items() if not sources
+    supplied = dict(
+        _VALIDATED_AXIS_EVIDENCE if validation_evidence is None else validation_evidence
     )
+    unknown = sorted(set(supplied) - set(_VALIDATION_AXES))
+    missing_sources = sorted(axis for axis, sources in supplied.items() if not sources)
     invalid_sources = sorted(
         f"{axis}:{source}"
-        for axis, sources in _VALIDATED_AXIS_EVIDENCE.items()
+        for axis, sources in supplied.items()
         for source in sources
-        if not source.startswith("test:")
+        if not source.startswith(("test:", "job:"))
     )
     if unknown or missing_sources or invalid_sources:
         raise RuntimeError(
@@ -101,9 +105,9 @@ def _resolve_validated_axes(
     if use_thd:
         active.add("thd")
     evidence = {
-        axis: _VALIDATED_AXIS_EVIDENCE[axis]
+        axis: tuple(supplied[axis])
         for axis in _VALIDATION_AXES
-        if axis in active and axis in _VALIDATED_AXIS_EVIDENCE
+        if axis in active and axis in supplied
     }
     return tuple(evidence), evidence
 
@@ -210,6 +214,7 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
     validated_axes, validation_evidence = _resolve_validated_axes(
         dimensions,
         use_thd=impl_cfg.use_thd,
+        validation_evidence=impl_cfg.validation_evidence,
     )
     return ModelBundle(
         chunks=chunks,
