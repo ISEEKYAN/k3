@@ -279,10 +279,11 @@ def test_container_python_and_narrow_dependency_sites_fail_loud():
         "ray",
         "pyvers",
         "hydra",
-        "omegaconf",
-        "antlr4",
     ):
         assert package in validate
+    assert '"hydra": ("hydra", hydra_site)' in validate
+    assert '"omegaconf":' not in validate
+    assert '"antlr4":' not in validate
     assert '"0.10.0"' in validate
     assert "nv26.05" in validate
     assert "/usr/local/lib/python3.12/dist-packages" in validate

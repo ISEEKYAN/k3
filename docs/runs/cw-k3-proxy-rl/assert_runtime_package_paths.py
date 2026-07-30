@@ -46,8 +46,6 @@ def assert_runtime_package_paths() -> dict[str, object]:
         "tensordict": ("tensordict", tensordict_site),
         "pyvers": ("pyvers", tensordict_site),
         "hydra": ("hydra", hydra_site),
-        "omegaconf": ("omegaconf", hydra_site),
-        "antlr4": ("antlr4", hydra_site),
     }
     resolved: dict[str, str] = {}
     for label, (module_name, expected_site) in expected_modules.items():

@@ -21,7 +21,9 @@ Required overlay inputs:
 Hydra is not present in the base image or the K3/qwen3.5 overlays. The recipe
 therefore appends a narrow site containing only hydra-core 1.3.3, OmegaConf
 2.3.1, and ANTLR 4.9.3 copied from the established VERL overlay. It is placed
-last so it cannot change the precedence of the validated runtime stack.
+last so it cannot change the precedence of the validated runtime stack. The
+preflight requires hydra itself to resolve there; base-owned transitive
+dependencies may take precedence when hydra imports successfully.
 
 Set `K3_IMAGE_SQSH` to a new shared path and run `cache_image.sbatch` once.
 The job uses pyxis `--container-save`, records the squashfs SHA-256, and all
