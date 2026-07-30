@@ -47,7 +47,10 @@ def main() -> None:
         model=os.environ["K3_MODEL_PATH"],
         trust_remote_code=True,
         tensor_parallel_size=8,
-        enable_expert_parallel=True,
+        # H100 uses the Marlin MXFP4 fallback. This overlay's Marlin post-load
+        # path assumes the full expert axis and is not compatible with EP
+        # sharding, so this rollout gate uses TP8 without EP.
+        enable_expert_parallel=False,
         distributed_executor_backend="external_launcher",
         gpu_memory_utilization=0.70,
         max_model_len=128,
@@ -66,7 +69,7 @@ def main() -> None:
             "backend": "external_launcher",
             "world_size": dist.get_world_size(),
             "tensor_parallel_size": 8,
-            "expert_parallel": True,
+            "expert_parallel": False,
             "prompt_token_ids": [1, 2, 3, 4],
             "generated_token_ids": token_ids,
         }

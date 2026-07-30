@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Kimi-K3 proxy offline generate: the proven vLLM external launcher at TP8+EP8.
+# Kimi-K3 proxy offline generate: the proven vLLM external launcher at TP8.
 #SBATCH --account=coreai_devtech_all
 #SBATCH --partition=interactive
 #SBATCH --nodes=1

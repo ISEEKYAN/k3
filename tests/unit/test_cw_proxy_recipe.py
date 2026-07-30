@@ -254,7 +254,7 @@ def test_proxy_stage_emits_fail_local_phase_markers():
         assert f'"{phase}"' in runner
 
 
-def test_proxy_generate_reuses_external_launcher_at_tp8_ep8():
+def test_proxy_generate_reuses_external_launcher_at_tp8():
     carrier = read("run_proxy_generate.sbatch")
     driver = read("run_proxy_generate.py")
 
@@ -279,7 +279,7 @@ def test_proxy_generate_reuses_external_launcher_at_tp8_ep8():
     assert "K3_GENERATE_WANDB_URL" in driver
     assert 'assert int(os.environ["WORLD_SIZE"]) == 8' in driver
     assert "tensor_parallel_size=8" in driver
-    assert "enable_expert_parallel=True" in driver
+    assert "enable_expert_parallel=False" in driver
     assert 'distributed_executor_backend="external_launcher"' in driver
     assert "skip_tokenizer_init=True" in driver
     assert "TokensPrompt" in driver
