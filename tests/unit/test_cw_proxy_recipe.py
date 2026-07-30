@@ -56,6 +56,19 @@ def test_overlay_validation_is_inside_srun():
     assert "import megatron.lite" in validation
     assert "import mlite_k3" in validation
     assert "import verl" in validation
+    assert 'import_module("verl.trainer.main_ppo")' in validation
+    assert 'import_module("verl_mlite.engine.mlite_engine")' in validation
+
+
+def test_te_audit_uses_node_local_dependencies_and_reports_missing_git():
+    sbatch = read("audit_te_build_env.sbatch")
+    audit = read("audit_te_build_env.py")
+
+    assert "SLURM_TMPDIR" in sbatch
+    assert "TE_SUBMODULE_STATUS" in sbatch
+    assert 'command("git", "--version")' in audit
+    assert '"required": False' in audit
+    assert "FileNotFoundError" not in audit
 
 
 def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():

@@ -61,6 +61,10 @@ def main() -> None:
         },
         "cmake": {"ok": utils.found_cmake(), "command": command("cmake", "--version")},
         "ninja": {"ok": utils.found_ninja(), "command": command("ninja", "--version")},
+        "git": {
+            **command("git", "--version"),
+            "required": False,
+        },
         "gcc": command(os.environ.get("CC", "gcc"), "--version"),
         "gxx": command(os.environ.get("CXX", "g++"), "--version"),
         "nvcc": command("nvcc", "--version"),
@@ -90,23 +94,18 @@ def main() -> None:
                 "error": str(exc),
             }
 
-    submodules = subprocess.run(
-        ["git", "-C", str(te_source), "submodule", "status", "--recursive"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    submodule_lines = submodules.stdout.splitlines()
+    submodule_lines = os.environ["TE_SUBMODULE_STATUS"].splitlines()
     checks["submodules"] = {
-        "ok": submodules.returncode == 0
+        "ok": bool(submodule_lines)
         and all(line and line[0] not in "-+" for line in submodule_lines),
-        "rc": submodules.returncode,
         "lines": submodule_lines,
     }
     failed = sorted(
         name
         for name, result in checks.items()
-        if isinstance(result, dict) and not result.get("ok", False)
+        if isinstance(result, dict)
+        and result.get("required", True)
+        and not result.get("ok", False)
     )
     print(
         "K3_TE_BUILD_AUDIT="

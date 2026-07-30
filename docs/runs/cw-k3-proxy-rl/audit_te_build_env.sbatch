@@ -15,12 +15,8 @@ recipe_dir="${K3_RECIPE_DIR:-${SLURM_SUBMIT_DIR:-$(pwd -L)}}"
 source "${recipe_dir}/image.env"
 
 : "${TE_SOURCE:?set TE_SOURCE to the pinned Transformer Engine checkout}"
-: "${TE_BUILD_DEPS:?set TE_BUILD_DEPS to a new build-dependency directory}"
-if [[ -e "${TE_BUILD_DEPS}" ]]; then
-  echo "FATAL TE_BUILD_DEPS already exists: ${TE_BUILD_DEPS}" >&2
-  exit 2
-fi
-mkdir -p "${TE_BUILD_DEPS}"
+export TE_SUBMODULE_STATUS
+TE_SUBMODULE_STATUS=$(git -C "${TE_SOURCE}" submodule status --recursive)
 
 srun \
   --container-image="${K3_IMAGE}" \
@@ -37,6 +33,9 @@ export NVTE_FRAMEWORK=pytorch
 export NVTE_CUDA_ARCHS=90
 export NVTE_WITH_NCCL_EP=0
 
+audit_tmp_root="${SLURM_TMPDIR:-/tmp}"
+TE_BUILD_DEPS=$(mktemp -d "${audit_tmp_root}/k3-te-audit-deps.XXXXXX")
+export TE_BUILD_DEPS
 /usr/bin/python3 -m pip install \
   --no-deps \
   --target "${TE_BUILD_DEPS}" \
