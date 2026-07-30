@@ -157,6 +157,7 @@ bash "${MLITE_ROOT}/experimental/lite/examples/verl/scripts/run_qwen3moe_gsm8k_g
   "data.trust_remote_code=True" \
   "++ray_kwargs.ray_init.runtime_env.env_vars.RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=\"1\"" \
   "++ray_kwargs.ray_init.runtime_env.env_vars.MLITE_K3_AUTO_REGISTER=\"1\"" \
+  "++ray_kwargs.ray_init.runtime_env.env_vars.PYTHONPATH=\"${PYTHONPATH}\"" \
   2>&1 | tee "${log_file}"
 run_rc=${PIPESTATUS[0]}
 set -e

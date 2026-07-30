@@ -240,6 +240,9 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert (
         '++ray_kwargs.ray_init.runtime_env.env_vars.MLITE_K3_AUTO_REGISTER=\\"1\\"'
     ) in runner
+    assert (
+        '++ray_kwargs.ray_init.runtime_env.env_vars.PYTHONPATH=\\"${PYTHONPATH}\\"'
+    ) in runner
     assert 'python3 "${recipe_dir}/assert_ray_cuda_env.py"' in runner
     assert runner.index(
         'python3 "${recipe_dir}/assert_ray_cuda_env.py"'
