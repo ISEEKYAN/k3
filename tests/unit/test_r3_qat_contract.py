@@ -150,6 +150,18 @@ def test_unknown_optimizer_fails_before_model_initialization():
         )
 
 
+def test_fused_router_is_rejected_before_model_initialization():
+    with pytest.raises(ValueError, match="moe_router_fusion=False"):
+        build_model(
+            _tiny_config(),
+            impl_cfg=ImplConfig(
+                device="cpu",
+                dtype="float32",
+                moe_router_fusion=True,
+            ),
+        )
+
+
 def test_k3_parallel_kda_imports_against_latest_mlite():
     from pathlib import Path
 

@@ -18,9 +18,12 @@ Required overlay inputs:
   Transformers, FLA, torchcodec, CUTLASS, or CUDA libraries.
 
 Run `validate_training_overlay.sbatch` first. Its import test is deliberately
-inside `srun`; login-node imports are not evidence. The training job uses one
-8-GPU node in the `interactive` partition, enables MLite MXFP4 QAT and R3
-router replay, and requires W&B logging.
+inside `srun`; login-node imports are not evidence. Then submit
+`run_proxy_stage.sbatch` as four separate one-node `interactive` jobs with
+`STAGE=import`, `construct`, `fwbw`, and `qat`. Only after all four pass, submit
+`run_proxy_qat_r3.sbatch` for the optimizer-backed RL step. The final job
+enables MLite MXFP4 QAT and R3 router replay, rejects fused routers, and
+requires W&B logging.
 
 `k3_training_env.sh` preserves the image PATH, adds CUDA compatibility
 libraries instead of replacing `LD_LIBRARY_PATH`, sets `CC`/`CXX`, forces

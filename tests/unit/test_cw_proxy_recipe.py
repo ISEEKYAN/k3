@@ -16,6 +16,7 @@ def test_image_contract_uses_x86_multiarch_k3_release():
     assert "K3_IMAGE=docker://vllm/vllm-openai:kimi-k3" in image
     assert "K3_IMAGE_INDEX_DIGEST=sha256:" in image
     assert "K3_IMAGE_AMD64_DIGEST=sha256:" in image
+    assert "MLITE_SOURCE_SHA=85eacfbc1" in image
 
 
 def test_training_environment_preserves_three_pollution_boundaries():
@@ -69,6 +70,7 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "impl_cfg.qat.format=mxfp4" in runner
     assert "router_replay_mode=R3" in runner
     assert "enable_rollout_routing_replay=True" in runner
+    assert "impl_cfg.moe_router_fusion=false" in runner
     assert "sleep 120" in runner
     assert "sleep 180" in runner
 
@@ -81,3 +83,15 @@ def test_proxy_checkpoint_build_is_a_zero_gpu_srun():
     assert "srun" in builder
     assert "--layers 12" in builder
     assert "--experts 56" in builder
+
+
+def test_fail_local_gpu_carrier_has_four_ordered_stages():
+    carrier = read("run_proxy_stage.sbatch")
+
+    assert "#SBATCH --partition=interactive" in carrier
+    assert "#SBATCH --nodes=1" in carrier
+    assert "#SBATCH --gpus-per-node=8" in carrier
+    assert "import | construct | fwbw | qat" in carrier
+    assert "validate_training_overlay.py" in carrier
+    assert "run_proxy_stage.py" in carrier
+    assert "OMP_NUM_THREADS" in read("k3_training_env.sh")

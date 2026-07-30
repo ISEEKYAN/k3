@@ -60,6 +60,7 @@ class ImplConfig:
     use_thd: bool = False
     use_deepep: bool = False
     deterministic: bool = False
+    moe_router_fusion: bool = False
     kda_cp_mode: str = "headwise"
     qat: QATSpec | dict[str, Any] | None = None
     validation_evidence: Mapping[str, tuple[str, ...]] | None = None
@@ -207,6 +208,8 @@ def _assert_validation_doc_contract(contents: str) -> None:
 
 def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
     """Build the verified reference or distributed bundle."""
+    if impl_cfg.moe_router_fusion:
+        raise ValueError("K3 R3 requires moe_router_fusion=False")
     dimensions = {
         name: _parallel_size(impl_cfg.parallel, name)
         for name in ("tp", "ep", "etp", "pp", "cp")

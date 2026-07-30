@@ -53,7 +53,7 @@ export NVTE_WITH_NCCL_EP=0
 /usr/bin/python3 -m pip install \
   --no-deps \
   --target "${TE_OVERLAY}/cuda-toolchain" \
-  "nvidia-cuda-nvcc==13.0.88"
+  -r "'"${recipe_dir}"'/te-build-requirements.txt"
 nvcc=$(find "${TE_OVERLAY}/cuda-toolchain" -type f -name nvcc -print -quit)
 if [[ -z "${nvcc}" ]]; then
   echo "FATAL nvidia-cuda-nvcc==13.0.88 did not provide nvcc" >&2
@@ -62,6 +62,7 @@ fi
 export CUDA_HOME
 CUDA_HOME=$(dirname "$(dirname "${nvcc}")")
 export PATH="${CUDA_HOME}/bin:${PATH}"
+export PYTHONPATH="${TE_OVERLAY}/cuda-toolchain"
 "${nvcc}" --version
 
 /usr/bin/python3 -m pip install \
