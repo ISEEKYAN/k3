@@ -25,6 +25,7 @@ ray.init(
     runtime_env={
         "env_vars": {
             "PYTHONPATH": os.environ["PYTHONPATH"],
+            "MLITE_K3_AUTO_REGISTER": "1",
             "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES": "1",
             "VERL_PRUNED_SITE": os.environ["VERL_PRUNED_SITE"],
             "VERL_DEPS_SITE": os.environ["VERL_DEPS_SITE"],
@@ -36,10 +37,14 @@ ray.init(
 
 @ray.remote(num_gpus=1)
 def check_gpu_actor_environment() -> dict[str, object]:
+    from megatron.lite.model.registry import resolve_runtime_model_name
+
     cuda_visible_devices = _assert_cuda_only("Ray GPU actor")
     package_paths = assert_runtime_package_paths()
+    assert resolve_runtime_model_name("k3", "lite") == "k3"
     return {
         "cuda_visible_devices": cuda_visible_devices,
+        "runtime_model_name": "k3",
         "package_paths": package_paths,
     }
 

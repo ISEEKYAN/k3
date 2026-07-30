@@ -237,6 +237,9 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
         "++ray_kwargs.ray_init.runtime_env.env_vars."
         'RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=\\"1\\"'
     ) in runner
+    assert (
+        '++ray_kwargs.ray_init.runtime_env.env_vars.MLITE_K3_AUTO_REGISTER=\\"1\\"'
+    ) in runner
     assert 'python3 "${recipe_dir}/assert_ray_cuda_env.py"' in runner
     assert runner.index(
         'python3 "${recipe_dir}/assert_ray_cuda_env.py"'
@@ -262,7 +265,9 @@ def test_ray_cuda_environment_gate_checks_a_gpu_actor():
     assert '"CUDA_VISIBLE_DEVICES" in os.environ' in gate
     assert "assert_runtime_package_paths" in gate
     assert '"PYTHONPATH": os.environ["PYTHONPATH"]' in gate
+    assert '"MLITE_K3_AUTO_REGISTER": "1"' in gate
     assert '"VERL_PRUNED_SITE": os.environ["VERL_PRUNED_SITE"]' in gate
+    assert 'resolve_runtime_model_name("k3", "lite") == "k3"' in gate
     assert "K3_RAY_CUDA_ENV_OK" in gate
 
 
