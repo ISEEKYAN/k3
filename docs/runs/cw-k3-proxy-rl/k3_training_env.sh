@@ -63,10 +63,16 @@ fi
 
 training_image_stat=$(stat -Lc "%s:%Y" "${K3_TRAINING_IMAGE}")
 runtime_image_fingerprint="sqsh-stat:${K3_TRAINING_IMAGE}:${training_image_stat}"
+recipe_fingerprint=$(
+  sha256sum "${recipe_dir}/image.env" "${BASH_SOURCE[0]}" \
+    | sha256sum \
+    | cut -d' ' -f1
+)
 
 fingerprint_input="$(
   printf '%s\n' \
     "${runtime_image_fingerprint}" \
+    "${recipe_fingerprint}" \
     "${k3_source_sha}" \
     "${MLITE_SOURCE_SHA}" \
     "${MCORE_SOURCE_SHA}" \

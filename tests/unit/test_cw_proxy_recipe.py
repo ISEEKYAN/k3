@@ -62,6 +62,7 @@ def test_jit_cache_is_persistent_keyed_and_fail_loud():
     assert "SLURM_JOB_ID" not in env
     assert "K3_TRAINING_IMAGE" in env
     assert "training_image_stat" in env
+    assert "recipe_fingerprint" in env
     assert "k3_source_sha" in env
     assert "gpu_cc" in env
     assert "TRITON_CACHE_DIR" in env
