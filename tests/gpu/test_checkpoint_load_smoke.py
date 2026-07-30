@@ -22,24 +22,6 @@ from mlite_k3.lite.model import K3ParallelModel
 from mlite_k3.lite.protocol import ImplConfig, build_model, load_hf_weights
 
 
-_TESTED_STRUCTURES = (
-    "dense",
-    "moe",
-    "mla",
-    "kda",
-    "shared_expert",
-    "router_expert_bias",
-)
-_TESTED_CAPABILITIES = (
-    "load",
-    "save",
-    "export_bf16",
-    "export_mxfp4",
-    "qat_canonical",
-    "shard_rules",
-)
-
-
 def _config() -> K3Config:
     return K3Config(
         hidden_size=256,
@@ -322,16 +304,8 @@ def main() -> None:
                         manifest.weights.quantized_weights
                         + manifest.weights.plain_tensors
                     ),
-                    "all_checkpoint_tensors_finite": True,
                     "expert_bias_dtype": "torch.float32",
-                    "qat_key_set_equal": True,
-                    "distributed_qat_import": True,
-                    "tp_ep_pp_bitwise_equal": True,
-                    "capabilities": [
-                        f"{structure}.{capability}"
-                        for structure in _TESTED_STRUCTURES
-                        for capability in _TESTED_CAPABILITIES
-                    ],
+                    "assertions": [],
                     "axes": [
                         name
                         for name in ("tp", "ep", "etp", "pp", "cp")

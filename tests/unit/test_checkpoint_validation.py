@@ -147,7 +147,7 @@ def test_capability_matrix_defaults_to_not_covered_without_execution_evidence():
 
 
 def test_capability_matrix_derives_only_the_explicitly_evidenced_cell():
-    source = f"job:12345#sha256:{'a' * 64}"
+    source = f"job:12345:assertion:expert_bias_is_finite_fp32#sha256:{'a' * 64}"
     matrix = build_capability_matrix({"router_expert_bias.load": (source,)})
     rows = {row["structure"]: row["cells"] for row in matrix["rows"]}
 
@@ -169,7 +169,7 @@ def test_capability_matrix_derives_only_the_explicitly_evidenced_cell():
         {"dense.load": ()},
         {"dense.load": ("looks convincing but is not an execution id",)},
         {"dense.load": ("test:i_promise_this_ran",)},
-        {"dense.load": ("job:12345#sha256:not-a-real-digest",)},
+        {"dense.load": ("job:12345:assertion:bad#sha256:not-a-real-digest",)},
     ),
 )
 def test_capability_matrix_rejects_invalid_or_untraceable_evidence(evidence):
@@ -394,7 +394,12 @@ def test_report_accepts_only_harness_verified_execution_evidence(tmp_path, monke
             + json.dumps(
                 {
                     "world_size": 8,
-                    "capabilities": ["moe.export_bf16"],
+                    "assertions": [
+                        {
+                            "cell": "moe.export_bf16",
+                            "assertion": "export_matches_baseline",
+                        }
+                    ],
                     "axes": ["tp", "ep", "pp"],
                 }
             )
@@ -422,7 +427,7 @@ def test_report_accepts_only_harness_verified_execution_evidence(tmp_path, monke
     finalize_evidence_bundle(
         runs,
         bundle_path,
-        sacct_query=lambda job_id: (f"{job_id}|COMPLETED|0:0|4|interactive\n"),
+        sacct_query=lambda job_id: f"{job_id}|COMPLETED|0:0|4|interactive\n",
     )
     monkeypatch.setattr(
         checkpoint_validation,
@@ -461,7 +466,12 @@ def test_report_rejects_evidence_missing_a_blocking_tier(tmp_path, monkeypatch):
         + json.dumps(
             {
                 "world_size": 8,
-                "capabilities": ["moe.export_bf16"],
+                "assertions": [
+                    {
+                        "cell": "moe.export_bf16",
+                        "assertion": "export_matches_baseline",
+                    }
+                ],
                 "axes": ["tp", "ep", "pp"],
             }
         )
