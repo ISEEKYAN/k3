@@ -266,6 +266,7 @@ def test_proxy_generate_reuses_external_launcher_at_tp8_ep8():
     assert "--container-image=\"${K3_TRAINING_IMAGE}\"" in carrier
     assert "OMP_NUM_THREADS=1" in carrier
     assert "K3_VLLM_SITE" in carrier
+    assert 'PYTHONPATH="${K3_VLLM_SITE}:${K3_CUTLASS_DSL_SITE}"' in carrier
     assert "PATH=/cm/shared/apps/slurm/current/bin:" in carrier
     assert "CC=/usr/bin/gcc" in carrier
     assert "CXX=/usr/bin/g++" in carrier
