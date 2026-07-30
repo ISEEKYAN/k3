@@ -46,6 +46,21 @@ def ensure_moe_sum_compatibility() -> None:
     print("K3_VLLM_MOE_SUM_COMPAT schema_args=2", flush=True)
 
 
+def ensure_flash_attn_mla_compatibility() -> None:
+    """Normalize the split-group CP-off sentinel to the FA3 contract."""
+    from vllm.v1.attention.backends.mla import flashattn_mla
+
+    original = flashattn_mla.flash_attn_varlen_func
+
+    def flash_attn_varlen_cp_compatibility(*args, **kwargs):
+        if kwargs.get("cp_world_size") == 0:
+            kwargs["cp_world_size"] = 1
+        return original(*args, **kwargs)
+
+    flashattn_mla.flash_attn_varlen_func = flash_attn_varlen_cp_compatibility
+    print("K3_VLLM_FA3_CP_COMPAT zero_to_one=enabled", flush=True)
+
+
 def initialize_world() -> None:
     if envs.VLLM_DISTRIBUTED_USE_SPLIT_GROUP:
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -63,6 +78,7 @@ def main() -> None:
     assert int(os.environ["WORLD_SIZE"]) == 8
     ensure_k3_env_compatibility()
     ensure_moe_sum_compatibility()
+    ensure_flash_attn_mla_compatibility()
     initialize_world()
     rank = dist.get_rank()
 
