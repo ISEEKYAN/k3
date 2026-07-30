@@ -219,6 +219,10 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "python3 -m ray.scripts.scripts start --head" in runner
     assert "--num-gpus=8" in runner
     assert "export RAY_ADDRESS=auto" in runner
+    assert "unset ROCR_VISIBLE_DEVICES" in runner
+    assert runner.index("unset ROCR_VISIBLE_DEVICES") < runner.index(
+        "python3 -m ray.scripts.scripts start --head"
+    )
 
 
 def test_ray_startup_probe_is_a_zero_gpu_full_environment_gate():

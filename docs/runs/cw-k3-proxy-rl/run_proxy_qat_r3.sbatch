@@ -73,6 +73,9 @@ export ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.45}"
 export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-128}"
 export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-64}"
 export PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-512}"
+# Slurm may publish the AMD visibility alias even on CUDA-only nodes. VERL
+# intentionally rejects simultaneous ROCm and CUDA visibility contracts.
+unset ROCR_VISIBLE_DEVICES
 export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=1
 export RAY_memory_monitor_refresh_ms=0
 export VLLM_USE_V1=1
