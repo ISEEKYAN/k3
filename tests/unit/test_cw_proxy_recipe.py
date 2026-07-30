@@ -49,10 +49,7 @@ def test_training_environment_preserves_three_pollution_boundaries():
     assert "VLLM_SITE:=${K3_VLLM_SITE}" in env
     assert "TRAINING_VLLM_SITE" not in env
     assert "MLITE_SM90_SITE" not in env
-    assert (
-        'export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
-        in env
-    )
+    assert 'export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:' in env
     assert (
         "${FLA_SITE}:${CUTLASS_DSL_SITE}:${recipe_dir}:${K3_ROOT}/src:"
         "${MEGATRON_ROOT}:${VERL_ROOT}:${VERL_DEPS_SITE}:"
@@ -215,7 +212,7 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "sleep 180" in runner
     assert 'RAY_TMPDIR="/tmp/k3-ray-${SLURM_JOB_ID}"' in runner
     assert "archive_ray_logs" in runner
-    assert 'ray-logs-${SLURM_JOB_ID}' in runner
+    assert "ray-logs-${SLURM_JOB_ID}" in runner
     assert 'cp -a "${RAY_TMPDIR}/."' not in runner
     assert '"raylet.*" "gcs_server.*" "runtime_env_agent.*"' in runner
     assert 'PYTHONPATH="${VLLM_SITE}"' in runner
@@ -239,7 +236,9 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
         "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1"
     ) in runner
     assert 'python3 "${recipe_dir}/assert_ray_cuda_env.py"' in runner
-    assert runner.index('python3 "${recipe_dir}/assert_ray_cuda_env.py"') < runner.index(
+    assert runner.index(
+        'python3 "${recipe_dir}/assert_ray_cuda_env.py"'
+    ) < runner.index(
         'bash "${MLITE_ROOT}/experimental/lite/examples/verl/scripts/'
         'run_qwen3moe_gsm8k_grpo.sh"'
     )
@@ -268,10 +267,7 @@ def test_container_python_and_tensordict_site_fail_loud():
     assert "K3_TENSORDICT_SITE=" in image
     assert "K3_PYVERS_SITE=" not in image
     assert "K3_HYDRA_SITE=" not in image
-    assert (
-        'export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
-        in env
-    )
+    assert 'export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:' in env
     for package in (
         "huggingface_hub",
         "transformers",
@@ -288,6 +284,12 @@ def test_container_python_and_tensordict_site_fail_loud():
     assert "/usr/local/lib/python3.12/dist-packages" in validate
     assert 'sys.executable != "/usr/bin/python3"' in validate
     assert validate.index("import torch") < validate.index("importlib.import_module")
+    assert "K3_CONTAINER_PYTHON_OK" in validate
+    assert validate.index("K3_CONTAINER_PYTHON_OK") < validate.index(
+        "importlib.import_module"
+    )
+    assert "pyvers.__version__" in validate
+    assert 'importlib.metadata.version("pyvers")' not in validate
     assert "K3_RUNTIME_PACKAGE_PATHS_OK" in validate
 
 
@@ -304,7 +306,7 @@ def test_ray_startup_probe_is_a_zero_gpu_full_environment_gate():
     assert "python3 -m ray.scripts.scripts start --head" in probe
     assert 'ray.init(address="auto")' in probe
     assert "K3_RAY_STARTUP_OK" in probe
-    assert 'ray-logs-${SLURM_JOB_ID}' in probe
+    assert "ray-logs-${SLURM_JOB_ID}" in probe
 
 
 def test_proxy_checkpoint_build_is_a_zero_gpu_srun():

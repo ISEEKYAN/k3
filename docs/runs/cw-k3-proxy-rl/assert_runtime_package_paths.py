@@ -22,6 +22,15 @@ def assert_runtime_package_paths() -> dict[str, object]:
         raise RuntimeError(f"host torch leaked into container: {torch.__version__}")
     if not torch_file.is_relative_to(container_site):
         raise RuntimeError(f"torch resolved outside container site: {torch_file}")
+    container_python = {
+        "python_executable": sys.executable,
+        "torch_file": str(torch_file),
+        "torch_version": torch.__version__,
+    }
+    print(
+        "K3_CONTAINER_PYTHON_OK " + json.dumps(container_python, sort_keys=True),
+        flush=True,
+    )
 
     vllm_site = Path(os.environ["VLLM_SITE"]).absolute()
     tensordict_site = Path(os.environ["TENSORDICT_SITE"]).absolute()
@@ -49,16 +58,15 @@ def assert_runtime_package_paths() -> dict[str, object]:
     tensordict_version = importlib.metadata.version("tensordict")
     if tensordict_version != "0.10.0":
         raise RuntimeError(f"unexpected tensordict version: {tensordict_version}")
-    pyvers_version = importlib.metadata.version("pyvers")
+    pyvers = importlib.import_module("pyvers")
+    pyvers_version = pyvers.__version__
     if pyvers_version != "0.1.0":
         raise RuntimeError(f"unexpected pyvers version: {pyvers_version}")
     return {
         "packages": resolved,
         "pyvers_version": pyvers_version,
         "tensordict_version": tensordict_version,
-        "python_executable": sys.executable,
-        "torch_file": str(torch_file),
-        "torch_version": torch.__version__,
+        **container_python,
     }
 
 
