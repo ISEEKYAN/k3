@@ -46,9 +46,6 @@ srun \
   /bin/bash --noprofile --norc -c '
 set -euo pipefail
 source "'"${recipe_dir}"'/k3_training_env.sh"
-python3 "${recipe_dir}/prepare_vllm_overlay_deps.py" \
-  --source-site "${K3_SM90_SITE}" \
-  --target-site "${VLLM_SITE}"
 python3 "${recipe_dir}/assert_runtime_package_paths.py"
 
 export WANDB_ENTITY="${WANDB_ENTITY:-megatron-core-moe-dev}"

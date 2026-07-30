@@ -7,6 +7,8 @@ import os
 
 import ray
 
+from assert_runtime_package_paths import assert_runtime_package_paths
+
 
 def _assert_cuda_only(scope: str) -> str:
     assert "ROCR_VISIBLE_DEVICES" not in os.environ, (
@@ -21,16 +23,26 @@ def _assert_cuda_only(scope: str) -> str:
 ray.init(
     address="auto",
     runtime_env={
-        "env_vars": {"RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES": "1"}
+        "env_vars": {
+            "PYTHONPATH": os.environ["PYTHONPATH"],
+            "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES": "1",
+            "TENSORDICT_SITE": os.environ["TENSORDICT_SITE"],
+            "VLLM_SITE": os.environ["VLLM_SITE"],
+        }
     },
 )
 
 
 @ray.remote(num_gpus=1)
-def check_gpu_actor_environment() -> str:
-    return _assert_cuda_only("Ray GPU actor")
+def check_gpu_actor_environment() -> dict[str, object]:
+    cuda_visible_devices = _assert_cuda_only("Ray GPU actor")
+    package_paths = assert_runtime_package_paths()
+    return {
+        "cuda_visible_devices": cuda_visible_devices,
+        "package_paths": package_paths,
+    }
 
 
-cuda_visible_devices = ray.get(check_gpu_actor_environment.remote())
-print(f"K3_RAY_CUDA_ENV_OK cuda_visible_devices={cuda_visible_devices}", flush=True)
+actor_contract = ray.get(check_gpu_actor_environment.remote())
+print(f"K3_RAY_CUDA_ENV_OK actor_contract={actor_contract}", flush=True)
 ray.shutdown()
