@@ -44,10 +44,12 @@ def test_jit_cache_is_persistent_keyed_and_fail_loud():
 
 
 def test_overlay_validation_is_inside_srun():
-    validation = read("validate_training_overlay.sbatch")
+    sbatch = read("validate_training_overlay.sbatch")
+    validation = read("validate_training_overlay.py")
 
-    assert "#SBATCH --partition=cpu_short" in validation
-    assert "srun" in validation
+    assert "#SBATCH --partition=cpu_short" in sbatch
+    assert "srun" in sbatch
+    assert "validate_training_overlay.py" in sbatch
     assert "transformer_engine.pytorch" in validation
     assert "import fla" in validation
     assert "import megatron.lite" in validation

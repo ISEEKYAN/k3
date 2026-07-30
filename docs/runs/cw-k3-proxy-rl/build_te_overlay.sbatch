@@ -70,19 +70,7 @@ export PATH="${CUDA_HOME}/bin:${PATH}"
   --target "${TE_OVERLAY}" \
   "${TE_SOURCE}"
 
-PYTHONPATH="${TE_OVERLAY}" /usr/bin/python3 - <<'"'"'PY'"'"'
-import importlib.metadata
-import torch
-import transformer_engine.pytorch as te
-
-print(
-    "K3_TE_BUILD_OK",
-    f"torch={torch.__version__}",
-    f"te={importlib.metadata.version('transformer-engine')}",
-    f"rmsnorm={te.RMSNorm.__name__}",
-    flush=True,
-)
-PY
+PYTHONPATH="${TE_OVERLAY}" /usr/bin/python3 "'"${recipe_dir}"'/validate_te.py"
 '
 
 {
