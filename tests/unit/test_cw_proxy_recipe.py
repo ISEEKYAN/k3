@@ -90,6 +90,7 @@ def test_overlay_validation_is_inside_srun():
     assert "#SBATCH --partition=cpu_short" in sbatch
     assert "srun" in sbatch
     assert "srun \\\n  --account=coreai_devtech_all" in sbatch
+    assert "--no-container-entrypoint" in sbatch
     assert "validate_training_overlay.py" in sbatch
     assert "transformer_engine.pytorch" in validation
     assert '"vllm_file": vllm.__file__' in validation
@@ -265,6 +266,7 @@ def test_proxy_generate_reuses_external_launcher_at_tp8():
     assert "#SBATCH --account=coreai_devtech_all" in carrier
     assert "srun \\\n  --account=coreai_devtech_all" in carrier
     assert '--container-image="${K3_TRAINING_IMAGE}"' in carrier
+    assert "--no-container-entrypoint" in carrier
     assert "OMP_NUM_THREADS=1" in carrier
     assert "K3_VLLM_SITE" in carrier
     assert "K3_CACHE_ROOT=" in read("image.env")
