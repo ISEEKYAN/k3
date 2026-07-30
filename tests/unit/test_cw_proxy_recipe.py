@@ -106,6 +106,8 @@ def test_training_base_probe_reuses_proven_pytorch_and_rollout_overlays():
     assert "pytorch_26.04-py3.sqsh" in probe
     assert "mlite-2604-verl-dsa-sm90-overlay" in probe
     assert "mlite-2612-cu13-canonical/vllm0251-site" in probe
+    assert "mlite-newenv-cache/qwen35-proven-canary-site" in probe
+    assert "ds4-csacp-parity-eaa5b486d/mcore" in probe
     assert "OMP_NUM_THREADS=1" in probe
     assert "pip install" not in probe
 

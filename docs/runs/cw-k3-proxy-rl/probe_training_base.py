@@ -60,7 +60,7 @@ if modules["vllm"]["ok"]:
         from vllm import ModelRegistry
 
         result["vllm_arch_supported"] = {
-            architecture: ModelRegistry.is_model_supported(architecture)
+            architecture: architecture in ModelRegistry.get_supported_archs()
             for architecture in config.get("architectures", [])
         }
     except Exception as error:  # noqa: BLE001 - this is a diagnostic boundary

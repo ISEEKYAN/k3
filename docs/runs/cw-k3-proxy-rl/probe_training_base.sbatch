@@ -19,6 +19,8 @@ recipe_dir="${K3_RECIPE_DIR:-${SLURM_SUBMIT_DIR:-$(pwd -L)}}"
 base_image=/lustre/fs1/portfolios/coreai/projects/coreai_devtech_all/users/bayan/code/env/pytorch_26.04-py3.sqsh
 mlite_sm90_site=/lustre/fs1/portfolios/coreai/projects/coreai_devtech_all/users/bayan/code/mlite-2604-verl-dsa-sm90-overlay/lib/python3.12/site-packages
 vllm_site=/lustre/fs1/portfolios/coreai/projects/coreai_devtech_all/users/bayan/code/mlite-2612-cu13-canonical/vllm0251-site
+qwen35_site=/lustre/fs1/portfolios/coreai/projects/coreai_devtech_all/users/bayan/code/mlite-newenv-cache/qwen35-proven-canary-site
+megatron_root=/lustre/fs1/portfolios/coreai/projects/coreai_devtech_all/users/bayan/code/runtime/ds4-csacp-parity-eaa5b486d/mcore
 verl_deps=/lustre/fs1/portfolios/coreai/projects/coreai_devtech_all/users/bayan/code/runtime/verl-latest-v1-deps
 
 srun \
@@ -34,6 +36,6 @@ export CUDA_HOME=/usr/local/cuda
 export PATH=/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
-export PYTHONPATH="'"${K3_ROOT}"'/src:'"${MLITE_ROOT}"'/experimental/lite:'"${MLITE_ROOT}"'/experimental/lite/examples/verl:'"${MLITE_ROOT}"':'"${VERL_ROOT}"':'"${vllm_site}"':'"${mlite_sm90_site}"'/nvidia_cutlass_dsl/python_packages:'"${mlite_sm90_site}"':'"${verl_deps}"'"
+export PYTHONPATH="'"${K3_ROOT}"'/src:'"${MLITE_ROOT}"'/experimental/lite:'"${MLITE_ROOT}"'/experimental/lite/examples/verl:'"${megatron_root}"':'"${VERL_ROOT}"':'"${vllm_site}"':'"${qwen35_site}"':'"${mlite_sm90_site}"'/nvidia_cutlass_dsl/python_packages:'"${mlite_sm90_site}"':'"${verl_deps}"'"
 /usr/bin/python3 "'"${recipe_dir}"'/probe_training_base.py"
 '
