@@ -22,6 +22,24 @@ from mlite_k3.lite.model import K3ParallelModel
 from mlite_k3.lite.protocol import ImplConfig, build_model, load_hf_weights
 
 
+_TESTED_STRUCTURES = (
+    "dense",
+    "moe",
+    "mla",
+    "kda",
+    "shared_expert",
+    "router_expert_bias",
+)
+_TESTED_CAPABILITIES = (
+    "load",
+    "save",
+    "export_bf16",
+    "export_mxfp4",
+    "qat_canonical",
+    "shard_rules",
+)
+
+
 def _config() -> K3Config:
     return K3Config(
         hidden_size=256,
@@ -274,6 +292,16 @@ def main() -> None:
                     "qat_key_set_equal": True,
                     "distributed_qat_import": True,
                     "tp_ep_pp_bitwise_equal": True,
+                    "capabilities": [
+                        f"{structure}.{capability}"
+                        for structure in _TESTED_STRUCTURES
+                        for capability in _TESTED_CAPABILITIES
+                    ],
+                    "axes": [
+                        name
+                        for name in ("tp", "ep", "etp", "pp", "cp")
+                        if int(getattr(parallel, name)) > 1
+                    ],
                 },
                 sort_keys=True,
             ),

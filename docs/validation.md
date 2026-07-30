@@ -323,10 +323,14 @@ python -m mlite_k3.validation_harness verify \
   ./artifacts/k3-evidence.json
 ```
 
-Capability cells and axes are registered with the tier in code and are emitted
-only after finalization succeeds. The bundle contains relative references to
-the fingerprinted run record and `sacct` artifact; copying or editing only the
-top-level JSON cannot manufacture coverage.
+Capability cells and axes are reported by the test itself only after its
+assertions succeed; tiers contain scheduling and test-identity constraints,
+not coverage claims. Finalization parses that test report, rejects unknown or
+missing capabilities, and binds the claims to the fingerprinted run record
+and `sacct` artifact. Copying or editing only the top-level JSON cannot
+manufacture coverage. A checkpoint report additionally requires every tier
+marked blocking (`checkpoint_gather_1n` and `checkpoint_gather_2n`); a partial
+bundle may be inspected but cannot be published as complete evidence.
 
 ## Evidence and publication rules
 

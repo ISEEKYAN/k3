@@ -111,12 +111,13 @@ def test_capability_matrix_defaults_to_not_covered_without_execution_evidence():
 
 
 def test_capability_matrix_derives_only_the_explicitly_evidenced_cell():
-    matrix = build_capability_matrix({"router_expert_bias.load": ("job:12345",)})
+    source = f"job:12345#sha256:{'a' * 64}"
+    matrix = build_capability_matrix({"router_expert_bias.load": (source,)})
     rows = {row["structure"]: row["cells"] for row in matrix["rows"]}
 
     assert rows["router_expert_bias"]["load"] == {
         "status": "covered",
-        "evidence": ["job:12345"],
+        "evidence": [source],
     }
     assert rows["router_expert_bias"]["save"] == {
         "status": "not-covered",
@@ -131,6 +132,8 @@ def test_capability_matrix_derives_only_the_explicitly_evidenced_cell():
         {"dense.unknown": ("test:tests/gpu/test.py::test_case",)},
         {"dense.load": ()},
         {"dense.load": ("looks convincing but is not an execution id",)},
+        {"dense.load": ("test:i_promise_this_ran",)},
+        {"dense.load": ("job:12345#sha256:not-a-real-digest",)},
     ),
 )
 def test_capability_matrix_rejects_invalid_or_untraceable_evidence(evidence):
@@ -302,6 +305,31 @@ def test_successful_report_uses_real_safetensors_and_has_no_unevidenced_coverage
     )
 
 
+def test_cli_refuses_to_publish_when_capability_docs_drift(tmp_path, monkeypatch):
+    spec = K3WeightSpec(_TinyConfig())
+    _write_real_safetensors_checkpoint(tmp_path, spec, monkeypatch)
+    drifted_doc = tmp_path / "validation.md"
+    canonical_doc = (Path(__file__).parents[2] / "docs/validation.md").read_text(
+        encoding="utf-8"
+    )
+    drifted_doc.write_text(
+        canonical_doc.replace('"load",', '"imaginary",', 1),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        checkpoint_validation,
+        "_CAPABILITY_DOC_PATH",
+        drifted_doc,
+        raising=False,
+    )
+    output = tmp_path / "summary.json"
+
+    with pytest.raises(RuntimeError, match="capability schema drift"):
+        checkpoint_validation.main([str(tmp_path), "--output", str(output)])
+
+    assert not output.exists()
+
+
 def test_validator_constructs_the_same_manifest_aware_spec_as_production_load(
     tmp_path, monkeypatch
 ):
@@ -326,10 +354,90 @@ def test_validator_constructs_the_same_manifest_aware_spec_as_production_load(
 def test_report_accepts_only_harness_verified_execution_evidence(tmp_path, monkeypatch):
     spec = K3WeightSpec(_TinyConfig())
     _write_real_safetensors_checkpoint(tmp_path, spec, monkeypatch)
+    runs = []
+    for tier, job_id, nodes in (
+        ("checkpoint_gather_1n", "12345", 1),
+        ("checkpoint_gather_2n", "12346", 2),
+    ):
+        run_dir = tmp_path / tier
+        run_dir.mkdir()
+        (run_dir / "stdout.log").write_text(
+            "K3_CHECKPOINT_LOAD_SMOKE="
+            + json.dumps(
+                {
+                    "world_size": 8,
+                    "capabilities": ["moe.export_bf16"],
+                    "axes": ["tp", "ep", "pp"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (run_dir / "stderr.log").write_text("", encoding="utf-8")
+        write_run_record(
+            run_dir,
+            tier=tier,
+            command=[
+                "torchrun",
+                "--nproc-per-node=8",
+                "tests/gpu/test_checkpoint_load_smoke.py",
+            ],
+            returncode=0,
+            duration_seconds=3.0,
+            git_commit="verified-commit",
+            slurm_job_id=job_id,
+            slurm_nodes=nodes,
+            slurm_partition="interactive",
+        )
+        runs.append(run_dir)
+    bundle_path = tmp_path / "evidence.json"
+    finalize_evidence_bundle(
+        runs,
+        bundle_path,
+        sacct_query=lambda job_id: (f"{job_id}|COMPLETED|0:0|4|interactive\n"),
+    )
+    monkeypatch.setattr(
+        checkpoint_validation,
+        "_current_git_commit",
+        lambda: "verified-commit",
+    )
+
+    report = validate_checkpoint(
+        tmp_path,
+        tmp_path / "summary.json",
+        evidence_bundle=bundle_path,
+    )
+
+    rows = {
+        row["structure"]: row["cells"] for row in report["coverage"]["matrix"]["rows"]
+    }
+    assert rows["moe"]["export_bf16"]["status"] == "covered"
+    assert all(
+        source.startswith(("test:", "job:"))
+        for source in rows["moe"]["export_bf16"]["evidence"]
+    )
+    assert set(report["coverage"]["axes"]) == {"tp", "ep", "pp"}
+    assert [run["job_id"] for run in report["coverage"]["runs"]] == [
+        "12345",
+        "12346",
+    ]
+
+
+def test_report_rejects_evidence_missing_a_blocking_tier(tmp_path, monkeypatch):
+    spec = K3WeightSpec(_TinyConfig())
+    _write_real_safetensors_checkpoint(tmp_path, spec, monkeypatch)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "stdout.log").write_text(
-        'K3_CHECKPOINT_LOAD_SMOKE={"world_size": 8}\n',
+        "K3_CHECKPOINT_LOAD_SMOKE="
+        + json.dumps(
+            {
+                "world_size": 8,
+                "capabilities": ["moe.export_bf16"],
+                "axes": ["tp", "ep", "pp"],
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     (run_dir / "stderr.log").write_text("", encoding="utf-8")
@@ -360,22 +468,12 @@ def test_report_accepts_only_harness_verified_execution_evidence(tmp_path, monke
         lambda: "verified-commit",
     )
 
-    report = validate_checkpoint(
-        tmp_path,
-        tmp_path / "summary.json",
-        evidence_bundle=bundle_path,
-    )
-
-    rows = {
-        row["structure"]: row["cells"] for row in report["coverage"]["matrix"]["rows"]
-    }
-    assert rows["moe"]["export_bf16"]["status"] == "covered"
-    assert all(
-        source.startswith(("test:", "job:"))
-        for source in rows["moe"]["export_bf16"]["evidence"]
-    )
-    assert set(report["coverage"]["axes"]) == {"tp", "ep", "pp"}
-    assert report["coverage"]["runs"][0]["job_id"] == "12345"
+    with pytest.raises(RuntimeError, match="missing blocking validation tiers"):
+        validate_checkpoint(
+            tmp_path,
+            tmp_path / "summary.json",
+            evidence_bundle=bundle_path,
+        )
 
 
 def test_public_report_writer_cannot_bypass_checkpoint_audit():

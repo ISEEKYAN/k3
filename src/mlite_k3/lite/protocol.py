@@ -11,6 +11,10 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
+from mlite_k3.validation_schema import (
+    VALIDATION_AXES,
+    is_verified_evidence_source,
+)
 from megatron.lite.model.protocol_utils import (
     pack_r3_replay_mask,
     pack_routed_experts,
@@ -36,7 +40,7 @@ _K3_MXFP4_QAT_IGNORES = (
     "mlp_res_proj",
     "output_attn_res_proj",
 )
-_VALIDATION_AXES = ("tp", "ep", "etp", "pp", "cp", "thd")
+_VALIDATION_AXES = VALIDATION_AXES
 _VALIDATED_AXIS_EVIDENCE: dict[str, tuple[str, ...]] = {}
 _VALIDATION_DOC_EVIDENCE = re.compile(
     r"<!-- K3_VALIDATED_AXIS_EVIDENCE_BEGIN -->\s*"
@@ -88,7 +92,7 @@ def _resolve_validated_axes(
         f"{axis}:{source}"
         for axis, sources in supplied.items()
         for source in sources
-        if not source.startswith(("test:", "job:"))
+        if not is_verified_evidence_source(source)
     )
     if unknown or missing_sources or invalid_sources:
         raise RuntimeError(

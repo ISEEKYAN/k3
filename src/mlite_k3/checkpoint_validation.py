@@ -22,7 +22,11 @@ from mlite_k3.lite.checkpoint import (
     get_hf_weight,
     inspect_hf_checkpoint,
 )
-from mlite_k3.validation_schema import CAPABILITIES, STRUCTURES
+from mlite_k3.validation_schema import (
+    CAPABILITIES,
+    STRUCTURES,
+    is_verified_evidence_source,
+)
 
 
 KIMI_K3_REVISION = "9f62e4e9fffbd0a83ddd60e1c209d828994b3569"
@@ -39,6 +43,7 @@ _CAPABILITY_DOC_CONTRACT = re.compile(
     r"<!-- K3_CAPABILITY_SCHEMA_END -->",
     re.DOTALL,
 )
+_CAPABILITY_DOC_PATH = Path(__file__).resolve().parents[2] / "docs/validation.md"
 
 
 def _normalize_capability_evidence(
@@ -59,7 +64,7 @@ def _normalize_capability_evidence(
         f"{key}:{source}"
         for key, sources in normalized.items()
         for source in sources
-        if not source.startswith(("test:", "job:"))
+        if not is_verified_evidence_source(source)
     )
     if unknown or missing_sources or invalid_sources:
         raise RuntimeError(
@@ -139,6 +144,16 @@ def _assert_capability_doc_contract(contents: str) -> None:
         raise RuntimeError(
             f"capability table drift: runtime={runtime_rows}, docs={documented_rows}"
         )
+
+
+def _assert_repository_capability_doc_contract() -> None:
+    try:
+        contents = _CAPABILITY_DOC_PATH.read_text(encoding="utf-8")
+    except OSError as error:
+        raise RuntimeError(
+            f"cannot read capability contract {_CAPABILITY_DOC_PATH}"
+        ) from error
+    _assert_capability_doc_contract(contents)
 
 
 def build_structural_samples(config: Any) -> dict[str, Any]:
@@ -284,6 +299,7 @@ def validate_checkpoint(
     evidence_bundle: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate the pinned complete release without retaining multiple shards."""
+    _assert_repository_capability_doc_contract()
     root = Path(path)
     config_path = root / "config.json"
     index_path = root / "model.safetensors.index.json"
@@ -314,6 +330,11 @@ def validate_checkpoint(
         from mlite_k3.validation_harness import load_evidence_bundle
 
         verified_evidence = load_evidence_bundle(evidence_bundle)
+        if verified_evidence.missing_blocking_tiers:
+            raise RuntimeError(
+                "missing blocking validation tiers: "
+                f"{list(verified_evidence.missing_blocking_tiers)}"
+            )
         current_commit = _current_git_commit()
         if verified_evidence.git_commit != current_commit:
             raise RuntimeError(

@@ -13,10 +13,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from mlite_k3.validation_schema import capability_cells
+from mlite_k3.validation_schema import (
+    VALIDATION_AXES,
+    capability_cells,
+)
 
 
-_SCHEMA = "mlite-k3-validation-evidence-v1"
+_SCHEMA = "mlite-k3-validation-evidence-v2"
 _GENERATOR = "mlite_k3.validation_harness"
 _CHECKPOINT_TEST_ID = "tests/gpu/test_checkpoint_load_smoke.py::main"
 _CHECKPOINT_SCRIPT = "tests/gpu/test_checkpoint_load_smoke.py"
@@ -33,8 +36,6 @@ class ValidationTier:
     test_id: str
     command_marker: str
     success_marker: str
-    axes: tuple[str, ...]
-    capabilities: tuple[str, ...]
 
 
 _TIERS = {
@@ -49,8 +50,6 @@ _TIERS = {
             test_id=_CHECKPOINT_TEST_ID,
             command_marker=_CHECKPOINT_SCRIPT,
             success_marker=_CHECKPOINT_MARKER,
-            axes=("tp", "ep", "pp"),
-            capabilities=capability_cells(),
         ),
         ValidationTier(
             name="checkpoint_gather_2n",
@@ -61,8 +60,6 @@ _TIERS = {
             test_id=_CHECKPOINT_TEST_ID,
             command_marker=_CHECKPOINT_SCRIPT,
             success_marker=_CHECKPOINT_MARKER,
-            axes=("tp", "ep", "pp"),
-            capabilities=capability_cells(),
         ),
         ValidationTier(
             name="checkpoint_scale_4n",
@@ -73,8 +70,6 @@ _TIERS = {
             test_id=_CHECKPOINT_TEST_ID,
             command_marker=_CHECKPOINT_SCRIPT,
             success_marker=_CHECKPOINT_MARKER,
-            axes=("tp", "ep", "pp"),
-            capabilities=capability_cells(),
         ),
     )
 }
@@ -86,6 +81,7 @@ class VerifiedEvidence:
     capabilities: dict[str, tuple[str, ...]]
     axes: dict[str, tuple[str, ...]]
     runs: tuple[dict[str, Any], ...]
+    missing_blocking_tiers: tuple[str, ...]
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -114,6 +110,15 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
         json.dumps(value, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _write_text_atomically(path: Path, contents: str) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write(contents)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
 
 
 def tier_plan(name: str) -> dict[str, Any]:
@@ -231,10 +236,61 @@ def _query_sacct(job_id: str) -> str:
     return completed.stdout
 
 
+def _parse_test_report(
+    stdout: Path, tier: ValidationTier
+) -> dict[str, tuple[str, ...]]:
+    prefix = tier.success_marker
+    payloads = [
+        line.removeprefix(prefix)
+        for line in stdout.read_text(encoding="utf-8").splitlines()
+        if line.startswith(prefix)
+    ]
+    if len(payloads) != 1:
+        raise RuntimeError(
+            f"run must contain exactly one {prefix!r} test report, got {len(payloads)}"
+        )
+    try:
+        report = json.loads(payloads[0])
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"invalid {prefix!r} test report") from error
+    if not isinstance(report, dict):
+        raise RuntimeError(f"{prefix!r} test report must be a JSON object")
+    raw_capabilities = report.get("capabilities")
+    raw_axes = report.get("axes")
+    if (
+        not isinstance(raw_capabilities, list)
+        or not all(isinstance(value, str) for value in raw_capabilities)
+        or not isinstance(raw_axes, list)
+        or not all(isinstance(value, str) for value in raw_axes)
+    ):
+        raise RuntimeError(
+            "invalid test-reported capabilities or axes: "
+            f"reported capabilities={raw_capabilities!r}, axes={raw_axes!r}"
+        )
+    capabilities = tuple(dict.fromkeys(raw_capabilities))
+    axes = tuple(dict.fromkeys(raw_axes))
+    valid_capabilities = set(capability_cells())
+    unknown_capabilities = sorted(set(capabilities) - valid_capabilities)
+    unknown_axes = sorted(set(axes) - set(VALIDATION_AXES))
+    if not capabilities or unknown_capabilities or unknown_axes:
+        raise RuntimeError(
+            "invalid test-reported capabilities or axes: "
+            f"reported capabilities={list(capabilities)}, "
+            f"unknown_capabilities={unknown_capabilities}, "
+            f"unknown_axes={unknown_axes}"
+        )
+    return {"capabilities": capabilities, "axes": axes}
+
+
 def _validate_completed_run(
     record_path: Path,
     sacct_path: Path,
-) -> tuple[dict[str, Any], ValidationTier, dict[str, Any]]:
+) -> tuple[
+    dict[str, Any],
+    ValidationTier,
+    dict[str, Any],
+    dict[str, tuple[str, ...]],
+]:
     record = _load_run_record(record_path)
     tier = _TIERS.get(record["tier"])
     if tier is None:
@@ -254,8 +310,7 @@ def _validate_completed_run(
             f"run Slurm allocation does not match tier {tier.name!r}: {slurm!r}"
         )
     stdout = record_path.parent / "stdout.log"
-    if tier.success_marker not in stdout.read_text(encoding="utf-8"):
-        raise RuntimeError(f"run is missing success marker {tier.success_marker!r}")
+    test_report = _parse_test_report(stdout, tier)
     if not sacct_path.is_file():
         raise RuntimeError(f"missing sacct artifact {sacct_path}")
     sacct = _parse_sacct(
@@ -267,7 +322,7 @@ def _validate_completed_run(
             f"sacct partition {sacct['partition']!r} does not match tier "
             f"{tier.partition!r}"
         )
-    return record, tier, sacct
+    return record, tier, sacct, test_report
 
 
 def finalize_evidence_bundle(
@@ -285,8 +340,8 @@ def finalize_evidence_bundle(
         record = _load_run_record(root / "run.json")
         job_id = record["slurm"]["job_id"]
         sacct_path = root / "sacct.txt"
-        sacct_path.write_text(sacct_query(job_id), encoding="utf-8")
-        verified, tier, sacct = _validate_completed_run(
+        _write_text_atomically(sacct_path, sacct_query(job_id))
+        verified, tier, sacct, _test_report = _validate_completed_run(
             root / "run.json",
             sacct_path,
         )
@@ -337,16 +392,18 @@ def load_evidence_bundle(path: str | Path) -> VerifiedEvidence:
         sacct_path = source.parent / entry["sacct"]
         if _digest_file(sacct_path) != entry["sacct_sha256"]:
             raise RuntimeError(f"sacct artifact digest mismatch: {sacct_path}")
-        record, tier, sacct = _validate_completed_run(record_path, sacct_path)
+        record, tier, sacct, test_report = _validate_completed_run(
+            record_path, sacct_path
+        )
         if record["git_commit"] != bundle["git_commit"]:
             raise RuntimeError("run commit does not match evidence bundle commit")
         if sacct["job_id"] != entry["job_id"]:
             raise RuntimeError("sacct job id does not match evidence bundle")
         test_source = f"test:{tier.test_id}#sha256:{record['fingerprint']}"
         job_source = f"job:{sacct['job_id']}#sha256:{entry['sacct_sha256']}"
-        for capability in tier.capabilities:
+        for capability in test_report["capabilities"]:
             capabilities.setdefault(capability, []).extend((test_source, job_source))
-        for axis in tier.axes:
+        for axis in test_report["axes"]:
             axes.setdefault(axis, []).extend((test_source, job_source))
         verified_runs.append(
             {
@@ -360,6 +417,12 @@ def load_evidence_bundle(path: str | Path) -> VerifiedEvidence:
 
     if not verified_runs:
         raise RuntimeError("K3 evidence bundle contains no verified runs")
+    completed_tiers = {run["tier"] for run in verified_runs}
+    missing_blocking_tiers = tuple(
+        tier.name
+        for tier in _TIERS.values()
+        if tier.blocking and tier.name not in completed_tiers
+    )
     return VerifiedEvidence(
         git_commit=bundle["git_commit"],
         capabilities={
@@ -367,6 +430,7 @@ def load_evidence_bundle(path: str | Path) -> VerifiedEvidence:
         },
         axes={key: tuple(dict.fromkeys(values)) for key, values in axes.items()},
         runs=tuple(verified_runs),
+        missing_blocking_tiers=missing_blocking_tiers,
     )
 
 
@@ -440,6 +504,7 @@ def main(argv: list[str] | None = None) -> int:
                 "capabilities": evidence.capabilities,
                 "axes": evidence.axes,
                 "runs": evidence.runs,
+                "missing_blocking_tiers": evidence.missing_blocking_tiers,
             },
             indent=2,
             sort_keys=True,

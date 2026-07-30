@@ -14,11 +14,26 @@ from mlite_k3.validation_harness import (
 from mlite_k3.validation_schema import capability_cells
 
 
-def _completed_run(tmp_path: Path, *, tier: str = "checkpoint_gather_1n") -> Path:
+def _completed_run(
+    tmp_path: Path,
+    *,
+    tier: str = "checkpoint_gather_1n",
+    capabilities: tuple[str, ...] | None = None,
+    axes: tuple[str, ...] = ("tp", "ep", "pp"),
+) -> Path:
     run_dir = tmp_path / tier
     run_dir.mkdir()
+    reported_capabilities = capabilities or capability_cells()
     (run_dir / "stdout.log").write_text(
-        'K3_CHECKPOINT_LOAD_SMOKE={"world_size": 8}\n',
+        "K3_CHECKPOINT_LOAD_SMOKE="
+        + json.dumps(
+            {
+                "world_size": 8,
+                "capabilities": reported_capabilities,
+                "axes": axes,
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     (run_dir / "stderr.log").write_text("", encoding="utf-8")
@@ -55,7 +70,8 @@ def test_tiers_prioritize_one_and_two_node_interactive_gather_validation():
     assert one["blocking"] is True
     assert two["blocking"] is True
     assert scale["blocking"] is False
-    assert set(one["capabilities"]) == set(capability_cells())
+    assert "capabilities" not in one
+    assert "axes" not in one
 
 
 def test_finalize_derives_capabilities_and_axes_from_completed_run(tmp_path):
@@ -76,6 +92,55 @@ def test_finalize_derives_capabilities_and_axes_from_completed_run(tmp_path):
         source.startswith("job:12345#sha256:")
         for source in evidence.capabilities["moe.export_bf16"]
     )
+
+
+def test_capabilities_are_derived_from_test_report_not_tier_declaration(tmp_path):
+    run_dir = _completed_run(
+        tmp_path,
+        capabilities=("moe.export_bf16",),
+        axes=("ep",),
+    )
+    bundle_path = tmp_path / "evidence.json"
+
+    finalize_evidence_bundle(
+        [run_dir],
+        bundle_path,
+        sacct_query=_completed_sacct,
+    )
+    evidence = load_evidence_bundle(bundle_path)
+
+    assert set(evidence.capabilities) == {"moe.export_bf16"}
+    assert set(evidence.axes) == {"ep"}
+
+
+def test_missing_test_reported_capabilities_cannot_sign_coverage(tmp_path):
+    run_dir = _completed_run(tmp_path)
+    (run_dir / "stdout.log").write_text(
+        'K3_CHECKPOINT_LOAD_SMOKE={"world_size": 8}\n',
+        encoding="utf-8",
+    )
+    write_run_record(
+        run_dir,
+        tier="checkpoint_gather_1n",
+        command=[
+            "torchrun",
+            "--nproc-per-node=8",
+            "tests/gpu/test_checkpoint_load_smoke.py",
+        ],
+        returncode=0,
+        duration_seconds=12.5,
+        git_commit="c3b1a4cd27",
+        slurm_job_id="12345",
+        slurm_nodes=1,
+        slurm_partition="interactive",
+    )
+
+    with pytest.raises(RuntimeError, match="reported capabilities"):
+        finalize_evidence_bundle(
+            [run_dir],
+            tmp_path / "evidence.json",
+            sacct_query=_completed_sacct,
+        )
 
 
 def test_plain_handwritten_manifest_is_rejected(tmp_path):
