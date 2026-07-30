@@ -138,7 +138,7 @@ def main() -> None:
         },
     }
     source_include_pattern = re.compile(
-        r"""^\s*#\s*include\s*[<"]((?:cuda|cublas|cudnn|nvrtc|nvtx3|nccl)[^">]+)[">]"""
+        r"^\s*#\s*include\s*<((?:cuda|cublas|cudnn|nvrtc|nvtx3|nccl)[^>]+)>"
     )
     source_suffixes = {".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp"}
     required_cuda_headers: set[str] = set()
@@ -158,14 +158,21 @@ def main() -> None:
         frontend_include,
         nccl_include,
     ]
+    disabled_optional_headers: set[str] = set()
+    if os.environ.get("NVTE_WITH_CUBLASMP", "0") == "0":
+        disabled_optional_headers.add("cublasmp.h")
+    if os.environ.get("NVTE_WITH_NCCL_EP", "1") == "0":
+        disabled_optional_headers.add("nccl_ep.h")
+    required_build_headers = required_cuda_headers - disabled_optional_headers
     missing_source_headers = [
         header
-        for header in sorted(required_cuda_headers)
+        for header in sorted(required_build_headers)
         if not any((root / header).is_file() for root in system_include_roots)
     ]
     checks["te_source_cuda_headers"] = {
         "ok": not missing_source_headers,
-        "count": len(required_cuda_headers),
+        "count": len(required_build_headers),
+        "disabled_optional": sorted(required_cuda_headers & disabled_optional_headers),
         "missing": missing_source_headers,
         "roots": [str(root) for root in system_include_roots],
     }
