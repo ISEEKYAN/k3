@@ -4,22 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from mlite_k3.config import K3Config
-from mlite_k3.lite.checkpoint import (
-    K3WeightSpec,
-    audit_k3_weight_spec_sources,
-    iter_hf_weights,
-    load_weights_from_reader,
-)
 from mlite_k3.model import K3Model
-
-
-class _Reader:
-    def __init__(self, tensors: dict[str, torch.Tensor]):
-        self._tensors = tensors
-        self.index = set(tensors)
-
-    def get_tensor(self, name: str) -> torch.Tensor:
-        return self._tensors[name]
 
 
 def _tiny_quantized_config() -> K3Config:
@@ -49,20 +34,6 @@ def _tiny_quantized_config() -> K3Config:
         num_experts_per_token=1,
         num_shared_experts=2,
     )
-
-
-def _release_reader(model: K3Model, spec: K3WeightSpec) -> _Reader:
-    from megatron.lite.primitive.quantization.mxfp4 import quantize_mxfp4
-
-    release = {}
-    for name, tensor in iter_hf_weights(model, spec):
-        if ".experts." not in name:
-            release[name] = tensor.clone()
-            continue
-        packed, scale = quantize_mxfp4(tensor)
-        release[f"{name}_packed"] = packed
-        release[f"{name}_scale"] = scale.view(torch.uint8)
-    return _Reader(release)
 
 
 def _rms_norm(module, x: torch.Tensor) -> torch.Tensor:
@@ -267,53 +238,12 @@ def _official_layer_reference(
     return prefix_sum + mlp_output, block_residual
 
 
-def test_real_tiny_model_tensors_have_complete_public_weight_mapping():
-    config = _tiny_quantized_config()
-    model = K3Model(config)
-    mapping = K3WeightSpec(config).weight_map()
-
-    production_bias = "layers.1.moe.router.expert_bias"
-    assert set(dict(model.named_parameters())) | set(dict(model.named_buffers())) == (
-        set(mapping) - {production_bias}
-    )
-    assert mapping[production_bias] == mapping["layers.1.moe.expert_bias"]
-    assert "layers.1.moe.expert_bias" not in dict(model.named_parameters())
-    assert "layers.1.moe.expert_bias" in dict(model.named_buffers())
-    assert "layers.1.moe.expert_bias" in model.state_dict()
-    assert not any(name.endswith(".conv.bias") for name, _ in model.named_parameters())
-
-
-def test_mxfp4_loaded_tiny_model_matches_independent_layer_reference():
+def test_tiny_model_matches_independent_layer_reference():
     # The independent equations above are transcribed from the pinned public
     # modeling_kimi_linear.py SHA-256 9e3564c70ac21854ce5a090cc946c5dc...
     torch.manual_seed(20260727)
     config = _tiny_quantized_config()
-    source = K3Model(config)
-    spec = K3WeightSpec(config)
-    reader = _release_reader(source, spec)
     target = K3Model(config)
-
-    assert sum(name.endswith("_packed") for name in reader.index) == (
-        config.num_experts * 3
-    )
-    assert audit_k3_weight_spec_sources(spec, reader.index) == len(
-        {name for names in spec.weight_map().values() for name in names}
-    )
-    assert load_weights_from_reader(target, reader, spec) == len(target.state_dict())
-    plain_hf = dict(iter_hf_weights(target, spec))
-    assert all(tensor.dtype == torch.bfloat16 for tensor in plain_hf.values())
-    reloaded = K3Model(config)
-    assert audit_k3_weight_spec_sources(spec, plain_hf) == len(plain_hf)
-    assert load_weights_from_reader(reloaded, _Reader(plain_hf), spec) == len(
-        reloaded.state_dict()
-    )
-    for (target_name, target_parameter), (reloaded_name, reloaded_parameter) in zip(
-        target.state_dict().items(),
-        reloaded.state_dict().items(),
-        strict=True,
-    ):
-        assert target_name == reloaded_name
-        assert torch.equal(target_parameter, reloaded_parameter)
 
     input_ids = torch.tensor([[1, 5, 7], [3, 2, 9]])
     target_hidden = target.embed_tokens(input_ids)
@@ -352,6 +282,4 @@ def test_mxfp4_loaded_tiny_model_matches_independent_layer_reference():
         target.lm_head.weight,
     )
     target_logits = target(input_ids=input_ids)["logits"]
-    reloaded_logits = reloaded(input_ids=input_ids)["logits"]
-    assert torch.equal(target_logits, reloaded_logits)
     torch.testing.assert_close(target_logits, reference_logits, rtol=0, atol=1e-6)

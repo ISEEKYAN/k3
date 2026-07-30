@@ -164,10 +164,23 @@ def vocab_size(model_cfg: K3Config) -> int:
     return model_cfg.vocab_size
 
 
+def load_hf_weights(
+    chunk: torch.nn.Module,
+    hf_path: str,
+    model_cfg: K3Config,
+    ps: Any,
+):
+    """Load a public K3 checkpoint through the shared HFWeights primitive."""
+    from mlite_k3.lite.checkpoint import load_hf_weights as load_impl
+
+    return load_impl(chunk, hf_path, model_cfg, ps)
+
+
 __all__ = [
     "ImplConfig",
     "build_model",
     "build_model_config",
+    "load_hf_weights",
     "pack_r3_replay_mask",
     "pack_routed_experts",
     "router_replay_roots",

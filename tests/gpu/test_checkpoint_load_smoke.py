@@ -1,0 +1,197 @@
+"""Scheduler-only K3 reduced-checkpoint load smoke over TP/EP/PP."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import torch
+import torch.distributed as dist
+from torch.distributed.elastic.multiprocessing.errors import record
+
+from megatron.lite.primitive.parallel import ParallelState
+from megatron.lite.runtime.contracts import ParallelConfig
+from mlite_k3.config import K3Config
+from mlite_k3.lite.checkpoint import K3WeightSpec, save_hf_weights
+from mlite_k3.lite.model import K3ParallelModel
+from mlite_k3.lite.protocol import ImplConfig, build_model, load_hf_weights
+
+
+def _config() -> K3Config:
+    return K3Config(
+        hidden_size=256,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        vocab_size=256,
+        intermediate_size=256,
+        max_position_embeddings=32,
+        q_lora_rank=64,
+        kv_lora_rank=64,
+        qk_nope_head_dim=64,
+        qk_rope_head_dim=64,
+        v_head_dim=64,
+        kda_head_dim=64,
+        kda_num_heads=4,
+        kda_short_conv_kernel_size=4,
+        full_attention_layers=(2,),
+        kda_layers=(1,),
+        attn_res_block_size=2,
+        first_k_dense_replace=1,
+        moe_intermediate_size=128,
+        routed_expert_hidden_size=128,
+        num_experts=8,
+        num_experts_per_token=2,
+        num_shared_experts=2,
+    )
+
+
+def _quantization_config(config: K3Config) -> dict:
+    return {
+        "text_config": {
+            "num_hidden_layers": config.num_hidden_layers,
+            "first_k_dense_replace": config.first_k_dense_replace,
+            "num_experts": config.num_experts,
+            "quantization_config": {
+                "config_groups": {
+                    "group_0": {
+                        "format": "mxfp4-pack-quantized",
+                        "targets": ["Linear"],
+                        "weights": {
+                            "dynamic": False,
+                            "group_size": 32,
+                            "num_bits": 4,
+                            "scale_dtype": "torch.uint8",
+                            "symmetric": True,
+                            "type": "float",
+                        },
+                    }
+                },
+                "format": "mxfp4-pack-quantized",
+                "ignore": [
+                    r"re:.*self_attn.*",
+                    r"re:.*shared_experts.*",
+                    r"re:.*mlp\.(gate|up|gate_up|down)_proj.*",
+                    r"re:.*lm_head.*",
+                    r"re:.*vision_tower.*",
+                    r"re:.*mm_projector.*",
+                ],
+                "quant_method": "compressed-tensors",
+            },
+        }
+    }
+
+
+def _checkpoint_targets(model: torch.nn.Module, spec: K3WeightSpec):
+    state = model.state_dict()
+    yield from model.named_parameters(remove_duplicate=False)
+    yield from (
+        (name, buffer)
+        for name, buffer in model.named_buffers(remove_duplicate=False)
+        if name in state and spec.is_export_buffer(name)
+    )
+
+
+@record
+def main() -> None:
+    dist.init_process_group("nccl")
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    if world_size != 8:
+        raise RuntimeError("K3 checkpoint load smoke requires exactly 8 ranks")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    device = torch.device("cuda", local_rank)
+    root = Path(os.environ["K3_LOAD_SMOKE_DIR"])
+    config = _config()
+
+    if rank == 0:
+        torch.manual_seed(20260729)
+        reference = K3ParallelModel(config, ParallelState()).to(
+            device=device,
+            dtype=torch.bfloat16,
+        )
+        summary = save_hf_weights(reference, root, config, target="mxfp4")
+        (root / "config.json").write_text(
+            json.dumps(_quantization_config(config), sort_keys=True),
+            encoding="utf-8",
+        )
+        del reference
+        torch.cuda.empty_cache()
+        print(
+            "K3_REDUCED_CHECKPOINT="
+            + json.dumps(
+                {
+                    "shards": summary.shards,
+                    "quantized_weights": summary.quantized_weights,
+                    "plain_tensors": summary.plain_tensors,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    dist.barrier()
+
+    parallel = ParallelConfig(tp=2, ep=2, etp=1, pp=2, cp=1)
+    bundle = build_model(
+        config,
+        impl_cfg=ImplConfig(
+            parallel=parallel,
+            device=f"cuda:{local_rank}",
+            dtype="bfloat16",
+        ),
+    )
+    model = bundle.chunks[0]
+    spec = K3WeightSpec(config)
+    targets = list(_checkpoint_targets(model, spec))
+    with torch.no_grad():
+        for _, tensor in targets:
+            tensor.fill_(torch.nan)
+
+    manifest = load_hf_weights(model, str(root), config, bundle.parallel_state)
+    if not targets or any(not torch.isfinite(tensor).all() for _, tensor in targets):
+        raise RuntimeError("K3 shared loader left a checkpoint tensor untouched")
+    expert_bias = [
+        tensor for name, tensor in targets if name.endswith(".moe.router.expert_bias")
+    ]
+    if expert_bias and any(tensor.dtype != torch.float32 for tensor in expert_bias):
+        raise RuntimeError("K3 expert_bias did not preserve its FP32 state dtype")
+
+    local_metrics = torch.tensor(
+        [
+            len(targets),
+            len(expert_bias),
+            len(model.layer_indices),
+            int(model.pre_process),
+            int(model.post_process),
+        ],
+        device=device,
+        dtype=torch.long,
+    )
+    gathered = [torch.zeros_like(local_metrics) for _ in range(world_size)]
+    dist.all_gather(gathered, local_metrics)
+    if rank == 0:
+        print(
+            "K3_CHECKPOINT_LOAD_SMOKE="
+            + json.dumps(
+                {
+                    "world_size": world_size,
+                    "parallel": {"tp": 2, "ep": 2, "etp": 1, "pp": 2, "cp": 1},
+                    "rank_metrics": [value.cpu().tolist() for value in gathered],
+                    "manifest_logical_tensors": (
+                        manifest.weights.quantized_weights
+                        + manifest.weights.plain_tensors
+                    ),
+                    "all_checkpoint_tensors_finite": True,
+                    "expert_bias_dtype": "torch.float32",
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()

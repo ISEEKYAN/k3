@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ _ROUTED_MXFP4_WEIGHT = re.compile(
     r"^language_model\.model\.layers\.\d+\.block_sparse_moe\.experts\.\d+"
     r"\.w[123]\.weight$"
 )
+_GROUPED_EXPERT_WEIGHT = re.compile(r"^(.*\.moe\.experts\.fc[12]\.weight)(\d+)$")
 
 
 @dataclass(frozen=True)
@@ -60,18 +62,54 @@ class K3CheckpointManifest:
     weights: WeightIndexAudit
 
 
+@dataclass(frozen=True)
+class K3RankWeight:
+    """One local state tensor selected by a metadata-only rank dry-run."""
+
+    native_name: str
+    hf_names: tuple[str, ...]
+    shape: tuple[int, ...]
+    dtype: torch.dtype
+
+
 class K3WeightSpec:
     """Exact Kimi K3 text-backbone mapping for the public release."""
 
-    def __init__(self, config: Any):
+    def __init__(
+        self,
+        config: Any,
+        *,
+        manifest: K3CheckpointManifest | None = None,
+    ):
         self.config = config
+        self.manifest = manifest
         self._mapping: dict[str, list[str]] | None = None
+
+    @property
+    def num_experts(self) -> int:
+        return self.config.num_experts
+
+    @property
+    def _uses_release_mxfp4(self) -> bool:
+        return (
+            self.manifest is not None
+            and self.manifest.quantization.format == "mxfp4-pack-quantized"
+        )
+
+    def _hf_sources(self, *names: str) -> list[str]:
+        if not self._uses_release_mxfp4:
+            return list(names)
+        return [
+            source for name in names for source in (f"{name}_packed", f"{name}_scale")
+        ]
 
     def weight_map(self) -> dict[str, list[str]]:
         if self._mapping is not None:
             return self._mapping
         mapping = {
-            "embed_tokens.weight": ["language_model.model.embed_tokens.weight"],
+            "embed_tokens.embedding.weight": [
+                "language_model.model.embed_tokens.weight"
+            ],
             "output_attn_res_norm.weight": [
                 "language_model.model.output_attn_res_norm.weight"
             ],
@@ -79,7 +117,7 @@ class K3WeightSpec:
                 "language_model.model.output_attn_res_proj.weight"
             ],
             "norm.weight": ["language_model.model.norm.weight"],
-            "lm_head.weight": ["language_model.lm_head.weight"],
+            "lm_head.col.linear.weight": ["language_model.lm_head.weight"],
         }
         for layer in range(self.config.num_hidden_layers):
             native = f"layers.{layer}"
@@ -98,11 +136,13 @@ class K3WeightSpec:
             else:
                 self._add_mla(mapping, native, hf)
             if layer < self.config.first_k_dense_replace:
-                mapping[f"{native}.mlp.gate_up.weight"] = [
+                mapping[f"{native}.mlp.gate_up.linear.weight"] = [
                     f"{hf}.mlp.gate_proj.weight",
                     f"{hf}.mlp.up_proj.weight",
                 ]
-                mapping[f"{native}.mlp.down.weight"] = [f"{hf}.mlp.down_proj.weight"]
+                mapping[f"{native}.mlp.down.linear.weight"] = [
+                    f"{hf}.mlp.down_proj.weight"
+                ]
             else:
                 self._add_moe(mapping, native, hf)
         self._mapping = mapping
@@ -110,52 +150,58 @@ class K3WeightSpec:
 
     @staticmethod
     def _add_kda(mapping: dict[str, list[str]], native: str, hf: str) -> None:
-        for name in (
-            "A_log",
-            "dt_bias",
-            "q_proj.weight",
-            "k_proj.weight",
-            "v_proj.weight",
-            "f_a_proj.weight",
-            "f_b_proj.weight",
-            "b_proj.weight",
-            "g_proj.weight",
-            "o_norm.weight",
-            "o_proj.weight",
-        ):
-            mapping[f"{native}.self_attention.{name}"] = [f"{hf}.self_attn.{name}"]
+        names = {
+            "A_log": "A_log",
+            "dt_bias": "dt_bias",
+            "q_proj.linear.weight": "q_proj.weight",
+            "k_proj.linear.weight": "k_proj.weight",
+            "v_proj.linear.weight": "v_proj.weight",
+            "f_a_proj.weight": "f_a_proj.weight",
+            "f_b_proj.linear.weight": "f_b_proj.weight",
+            "b_proj.linear.weight": "b_proj.weight",
+            "g_proj.linear.weight": "g_proj.weight",
+            "o_norm.weight": "o_norm.weight",
+            "o_proj.linear.weight": "o_proj.weight",
+        }
+        for native_name, hf_name in names.items():
+            mapping[f"{native}.self_attention.{native_name}"] = [
+                f"{hf}.self_attn.{hf_name}"
+            ]
         for name in ("q_conv1d", "k_conv1d", "v_conv1d"):
-            mapping[f"{native}.self_attention.{name}.conv.weight"] = [
+            mapping[f"{native}.self_attention.{name}.weight"] = [
                 f"{hf}.self_attn.{name}.weight"
             ]
 
     @staticmethod
     def _add_mla(mapping: dict[str, list[str]], native: str, hf: str) -> None:
-        for name in (
-            "q_a_proj.weight",
-            "q_a_layernorm.weight",
-            "q_b_proj.weight",
-            "kv_a_proj_with_mqa.weight",
-            "kv_a_layernorm.weight",
-            "kv_b_proj.weight",
-            "g_proj.weight",
-            "o_proj.weight",
-        ):
-            mapping[f"{native}.self_attention.{name}"] = [f"{hf}.self_attn.{name}"]
+        names = {
+            "linear_q_down_proj.weight": "q_a_proj.weight",
+            "linear_q_up_proj.linear.layer_norm_weight": "q_a_layernorm.weight",
+            "linear_q_up_proj.linear.weight": "q_b_proj.weight",
+            "linear_kv_down_proj.weight": "kv_a_proj_with_mqa.weight",
+            "linear_kv_up_proj.linear.layer_norm_weight": "kv_a_layernorm.weight",
+            "linear_kv_up_proj.linear.weight": "kv_b_proj.weight",
+            "linear_g_proj.linear.weight": "g_proj.weight",
+            "linear_proj.linear.weight": "o_proj.weight",
+        }
+        for native_name, hf_name in names.items():
+            mapping[f"{native}.self_attention.{native_name}"] = [
+                f"{hf}.self_attn.{hf_name}"
+            ]
 
     def _add_moe(self, mapping: dict[str, list[str]], native: str, hf: str) -> None:
         prefix = f"{hf}.block_sparse_moe"
         fixed = {
-            "expert_bias": "gate.e_score_correction_bias",
-            "router.weight": "gate.weight",
+            "router.expert_bias": "gate.e_score_correction_bias",
+            "router.gate.weight": "gate.weight",
             "routed_expert_down_proj.weight": "routed_expert_down_proj.weight",
             "routed_expert_norm.weight": "routed_expert_norm.weight",
             "routed_expert_up_proj.weight": "routed_expert_up_proj.weight",
-            "shared_experts.gate_up.weight": (
+            "shared_experts.gate_up.linear.weight": (
                 "shared_experts.gate_proj.weight",
                 "shared_experts.up_proj.weight",
             ),
-            "shared_experts.down.weight": "shared_experts.down_proj.weight",
+            "shared_experts.down.linear.weight": "shared_experts.down_proj.weight",
         }
         for native_suffix, hf_suffixes in fixed.items():
             if isinstance(hf_suffixes, str):
@@ -163,18 +209,36 @@ class K3WeightSpec:
             mapping[f"{native}.moe.{native_suffix}"] = [
                 f"{prefix}.{suffix}" for suffix in hf_suffixes
             ]
-        mapping[f"{native}.moe.router.expert_bias"] = mapping[
-            f"{native}.moe.expert_bias"
-        ]
         for expert in range(self.config.num_experts):
             expert_prefix = f"{prefix}.experts.{expert}"
-            mapping[f"{native}.moe.experts.{expert}.gate_up.weight"] = [
+            mapping[f"{native}.moe.experts.fc1.weight{expert}"] = self._hf_sources(
                 f"{expert_prefix}.w1.weight",
                 f"{expert_prefix}.w3.weight",
-            ]
-            mapping[f"{native}.moe.experts.{expert}.down.weight"] = [
+            )
+            mapping[f"{native}.moe.experts.fc2.weight{expert}"] = self._hf_sources(
                 f"{expert_prefix}.w2.weight"
-            ]
+            )
+
+    @staticmethod
+    def _materialize_mxfp4_pair(
+        packed: torch.Tensor,
+        encoded_scale: torch.Tensor,
+    ) -> torch.Tensor:
+        if packed.dtype not in (torch.uint8, torch.int8):
+            raise TypeError(
+                f"MXFP4 packed tensor must be uint8/int8, got {packed.dtype}"
+            )
+        if encoded_scale.dtype != torch.uint8:
+            raise TypeError(
+                f"MXFP4 encoded scale must be uint8 E8M0, got {encoded_scale.dtype}"
+            )
+        from mlite_k3.primitive.mxfp4 import dequantize_mxfp4
+
+        packed_i8 = packed if packed.dtype == torch.int8 else packed.view(torch.int8)
+        return dequantize_mxfp4(
+            packed_i8,
+            encoded_scale.view(torch.float8_e8m0fnu),
+        )
 
     def hf_to_native(
         self, native_name: str, hf_tensors: list[torch.Tensor]
@@ -187,10 +251,21 @@ class K3WeightSpec:
                 f"{native_name!r} requires {len(expected)} HF tensors, "
                 f"got {len(hf_tensors)}"
             )
-        if native_name.endswith(".gate_up.weight"):
+        if self._uses_release_mxfp4 and self.is_expert(native_name):
+            if len(hf_tensors) % 2:
+                raise ValueError(f"{native_name!r} requires MXFP4 packed/scale pairs")
+            hf_tensors = [
+                self._materialize_mxfp4_pair(packed, scale)
+                for packed, scale in zip(
+                    hf_tensors[0::2],
+                    hf_tensors[1::2],
+                    strict=True,
+                )
+            ]
+        if ".gate_up." in native_name or ".fc1." in native_name:
             return torch.cat(hf_tensors, dim=0).contiguous()
         tensor = hf_tensors[0]
-        if re.search(r"\.[qkv]_conv1d\.conv\.weight$", native_name):
+        if re.search(r"\.[qkv]_conv1d\.weight$", native_name):
             if tensor.ndim != 3 or tensor.size(1) != 1:
                 raise ValueError(
                     f"{native_name!r} must have shape [channels, 1, kernel], "
@@ -204,9 +279,14 @@ class K3WeightSpec:
         names = self.weight_map().get(native_name)
         if names is None:
             raise KeyError(f"unknown K3 native tensor {native_name!r}")
-        if native_name.endswith(".gate_up.weight"):
+        names = list(
+            dict.fromkeys(
+                name.removesuffix("_packed").removesuffix("_scale") for name in names
+            )
+        )
+        if ".gate_up." in native_name or ".fc1." in native_name:
             parts = tensor.chunk(2, dim=0)
-        elif re.search(r"\.[qkv]_conv1d\.conv\.weight$", native_name):
+        elif re.search(r"\.[qkv]_conv1d\.weight$", native_name):
             if tensor.ndim != 3 or tensor.size(1) != 1:
                 raise ValueError(
                     f"{native_name!r} must have shape [channels, 1, kernel], "
@@ -217,22 +297,298 @@ class K3WeightSpec:
             parts = (tensor,)
         return list(zip(names, parts, strict=True))
 
+    def qkv_spec(self, native_name: str) -> None:
+        del native_name
+        return None
+
+    def tp_spec(self, native_name: str) -> tuple[int, int] | None:
+        if self.is_expert(native_name):
+            return (0, 1) if ".fc1." in native_name else (1, 1)
+        if native_name in {
+            "embed_tokens.embedding.weight",
+            "lm_head.col.linear.weight",
+        }:
+            return (0, 0)
+        if re.search(
+            r"\.self_attention\."
+            r"(q_proj|k_proj|v_proj|f_b_proj|b_proj|g_proj)\.linear\.weight$",
+            native_name,
+        ):
+            return (0, 0)
+        if re.search(
+            r"\.self_attention\.(q|k|v)_conv1d\.weight$",
+            native_name,
+        ) or native_name.endswith((".self_attention.A_log", ".self_attention.dt_bias")):
+            return (0, 0)
+        if native_name.endswith(".self_attention.o_proj.linear.weight"):
+            return (1, 0)
+        if native_name.endswith(
+            (
+                ".self_attention.linear_q_up_proj.linear.weight",
+                ".self_attention.linear_kv_up_proj.linear.weight",
+                ".self_attention.linear_g_proj.linear.weight",
+                ".mlp.gate_up.linear.weight",
+                ".moe.shared_experts.gate_up.linear.weight",
+            )
+        ):
+            return (0, 0)
+        if native_name.endswith(
+            (
+                ".self_attention.linear_proj.linear.weight",
+                ".mlp.down.linear.weight",
+                ".moe.shared_experts.down.linear.weight",
+            )
+        ):
+            return (1, 0)
+        return None
+
+    @staticmethod
+    def is_expert(native_name: str) -> bool:
+        return _GROUPED_EXPERT_WEIGHT.fullmatch(native_name) is not None
+
+    def expert_global_id(self, native_name: str) -> int | None:
+        match = _GROUPED_EXPERT_WEIGHT.fullmatch(native_name)
+        return int(match.group(2)) if match is not None else None
+
+    @staticmethod
+    def expert_local_name(native_name: str, local_idx: int) -> str:
+        match = _GROUPED_EXPERT_WEIGHT.fullmatch(native_name)
+        if match is None:
+            raise ValueError(f"{native_name!r} is not a K3 grouped-expert weight")
+        return f"{match.group(1)}{local_idx}"
+
+    @staticmethod
+    def is_export_buffer(native_name: str) -> bool:
+        return native_name.endswith(".moe.router.expert_bias")
+
+
+def _k3_local_shape(
+    native_name: str,
+    config: Any,
+    *,
+    tp_size: int,
+    etp_size: int,
+) -> tuple[int, ...]:
+    hidden = config.hidden_size
+    if native_name in {
+        "embed_tokens.embedding.weight",
+        "lm_head.col.linear.weight",
+    }:
+        vocab_divisor = math.lcm(128, tp_size)
+        padded_vocab = math.ceil(config.vocab_size / vocab_divisor) * vocab_divisor
+        return (padded_vocab // tp_size, hidden)
+    if native_name in {
+        "output_attn_res_norm.weight",
+        "norm.weight",
+    } or native_name.endswith(
+        (
+            ".input_layernorm.weight",
+            ".post_attention_layernorm.weight",
+            ".self_attention_res_norm.weight",
+            ".mlp_res_norm.weight",
+        )
+    ):
+        return (hidden,)
+    if native_name == "output_attn_res_proj.weight" or native_name.endswith(
+        (".self_attention_res_proj.weight", ".mlp_res_proj.weight")
+    ):
+        return (1, hidden)
+
+    if ".self_attention." in native_name:
+        suffix = native_name.split(".self_attention.", 1)[1]
+        kda_projection = config.kda_num_heads * config.kda_head_dim
+        if suffix in {
+            "q_proj.linear.weight",
+            "k_proj.linear.weight",
+            "v_proj.linear.weight",
+            "g_proj.linear.weight",
+        }:
+            return (kda_projection // tp_size, hidden)
+        if suffix == "f_a_proj.weight":
+            return (config.kda_head_dim, hidden)
+        if suffix == "f_b_proj.linear.weight":
+            return (kda_projection // tp_size, config.kda_head_dim)
+        if suffix == "b_proj.linear.weight":
+            return (config.kda_num_heads // tp_size, hidden)
+        if suffix in {"A_log", "dt_bias"}:
+            tail = () if suffix == "A_log" else (config.kda_head_dim,)
+            return (config.kda_num_heads // tp_size, *tail)
+        if re.fullmatch(r"[qkv]_conv1d\.weight", suffix):
+            return (
+                kda_projection // tp_size,
+                1,
+                config.kda_short_conv_kernel_size,
+            )
+        if suffix == "o_norm.weight":
+            return (config.kda_head_dim,)
+        if suffix == "o_proj.linear.weight":
+            return (hidden, kda_projection // tp_size)
+
+        q_head_dim = config.qk_nope_head_dim + config.qk_rope_head_dim
+        if suffix == "linear_q_down_proj.weight":
+            return (config.q_lora_rank, hidden)
+        if suffix == "linear_q_up_proj.linear.layer_norm_weight":
+            return (config.q_lora_rank,)
+        if suffix == "linear_q_up_proj.linear.weight":
+            return (
+                config.num_attention_heads * q_head_dim // tp_size,
+                config.q_lora_rank,
+            )
+        if suffix == "linear_kv_down_proj.weight":
+            return (config.kv_lora_rank + config.qk_rope_head_dim, hidden)
+        if suffix == "linear_kv_up_proj.linear.layer_norm_weight":
+            return (config.kv_lora_rank,)
+        if suffix == "linear_kv_up_proj.linear.weight":
+            return (
+                config.num_attention_heads
+                * (config.qk_nope_head_dim + config.v_head_dim)
+                // tp_size,
+                config.kv_lora_rank,
+            )
+        if suffix == "linear_g_proj.linear.weight":
+            return (
+                config.num_attention_heads * config.v_head_dim // tp_size,
+                hidden,
+            )
+        if suffix == "linear_proj.linear.weight":
+            return (
+                hidden,
+                config.num_attention_heads * config.v_head_dim // tp_size,
+            )
+
+    if native_name.endswith(".mlp.gate_up.linear.weight"):
+        return (2 * config.intermediate_size // tp_size, hidden)
+    if native_name.endswith(".mlp.down.linear.weight"):
+        return (hidden, config.intermediate_size // tp_size)
+    if native_name.endswith(".moe.router.gate.weight"):
+        return (config.num_experts, hidden)
+    if native_name.endswith(".moe.router.expert_bias"):
+        return (config.num_experts,)
+    if native_name.endswith(".moe.routed_expert_down_proj.weight"):
+        return (config.routed_expert_hidden_size, hidden)
+    if native_name.endswith(".moe.routed_expert_norm.weight"):
+        return (config.routed_expert_hidden_size,)
+    if native_name.endswith(".moe.routed_expert_up_proj.weight"):
+        return (hidden, config.routed_expert_hidden_size)
+    if native_name.endswith(".moe.shared_experts.gate_up.linear.weight"):
+        return (2 * config.shared_expert_intermediate_size // tp_size, hidden)
+    if native_name.endswith(".moe.shared_experts.down.linear.weight"):
+        return (hidden, config.shared_expert_intermediate_size // tp_size)
+    if ".moe.experts.fc1." in native_name:
+        return (
+            2 * config.moe_intermediate_size // etp_size,
+            config.routed_expert_hidden_size,
+        )
+    if ".moe.experts.fc2." in native_name:
+        return (
+            config.routed_expert_hidden_size,
+            config.moe_intermediate_size // etp_size,
+        )
+    raise KeyError(f"no K3 dry-run shape rule for {native_name!r}")
+
+
+def plan_k3_rank_weights(
+    spec: K3WeightSpec,
+    index: Mapping[str, str],
+    *,
+    layer_indices: list[int],
+    has_embed: bool,
+    has_head: bool,
+    tp_size: int,
+    tp_rank: int,
+    ep_size: int,
+    ep_rank: int,
+    etp_size: int,
+) -> tuple[K3RankWeight, ...]:
+    """Select and shape-check one PP/TP/EP/ETP rank without opening shards."""
+    config = spec.config
+    if not 0 <= tp_rank < tp_size:
+        raise ValueError("tp_rank must be within tp_size")
+    if config.num_experts % ep_size:
+        raise ValueError("num_experts must be divisible by ep_size")
+    global_to_local = {
+        global_index: local_index
+        for local_index, global_index in enumerate(layer_indices)
+    }
+    experts_per_rank = config.num_experts // ep_size
+    expert_start = ep_rank * experts_per_rank
+    expert_stop = expert_start + experts_per_rank
+    planned = []
+    for global_name, hf_names in spec.weight_map().items():
+        match = re.match(r"layers\.(\d+)(\..*)", global_name)
+        if match is not None:
+            global_layer = int(match.group(1))
+            if global_layer not in global_to_local:
+                continue
+            native_name = f"layers.{global_to_local[global_layer]}{match.group(2)}"
+        else:
+            native_name = global_name
+            if native_name.startswith("embed_tokens.") and not has_embed:
+                continue
+            if (
+                native_name.startswith(("output_attn_res_", "norm.", "lm_head."))
+                and not has_head
+            ):
+                continue
+        expert_id = spec.expert_global_id(global_name)
+        if expert_id is not None and not expert_start <= expert_id < expert_stop:
+            continue
+        if any(name not in index for name in hf_names):
+            missing = next(name for name in hf_names if name not in index)
+            raise KeyError(f"rank plan source {missing!r} is absent from index")
+        if expert_id is not None:
+            native_name = spec.expert_local_name(
+                native_name,
+                expert_id - expert_start,
+            )
+        dtype = (
+            torch.float32
+            if native_name.endswith(
+                (
+                    ".self_attention.A_log",
+                    ".self_attention.dt_bias",
+                    ".moe.router.expert_bias",
+                )
+            )
+            else torch.bfloat16
+        )
+        planned.append(
+            K3RankWeight(
+                native_name=native_name,
+                hf_names=tuple(hf_names),
+                shape=_k3_local_shape(
+                    native_name,
+                    config,
+                    tp_size=tp_size,
+                    etp_size=etp_size,
+                ),
+                dtype=dtype,
+            )
+        )
+    names = [item.native_name for item in planned]
+    if len(names) != len(set(names)):
+        raise RuntimeError("K3 rank plan contains duplicate native state keys")
+    return tuple(planned)
+
 
 def audit_k3_weight_spec_sources(
     spec: K3WeightSpec,
     index: Mapping[str, str],
 ) -> int:
     """Require every mapped text tensor before opening a release shard."""
-    expected = {
+    expected_sources = {
         name for source_names in spec.weight_map().values() for name in source_names
     }
-    for name in sorted(expected):
+    for name in sorted(expected_sources):
         if name in index:
             continue
         if f"{name}_packed" in index and f"{name}_scale" in index:
             continue
         raise ValueError(f"missing mapped K3 tensor {name!r}")
 
+    expected = {
+        name.removesuffix("_packed").removesuffix("_scale") for name in expected_sources
+    }
     indexed_text = {
         name.removesuffix("_packed").removesuffix("_scale")
         for name in index
@@ -391,36 +747,6 @@ def _canonical_state_key(name: str) -> str:
     return canonical_state_key(name)
 
 
-def load_weights_from_reader(
-    model: torch.nn.Module,
-    reader: Any,
-    spec: K3WeightSpec,
-) -> int:
-    """Stream all native parameters and persistent buffers from a reader."""
-    base = _unwrap_model(model)
-    mapping = spec.weight_map()
-    loaded = 0
-    with torch.no_grad():
-        for state_name, parameter in _named_checkpoint_tensors(base):
-            native_name = _canonical_state_key(state_name)
-            hf_names = mapping.get(native_name)
-            if hf_names is None:
-                raise KeyError(
-                    f"native tensor {native_name!r} has no K3 checkpoint mapping"
-                )
-            hf_tensors = [get_hf_weight(reader, name) for name in hf_names]
-            tensor = spec.hf_to_native(native_name, hf_tensors)
-            if tensor.shape != parameter.shape:
-                raise ValueError(
-                    f"shape mismatch for {native_name!r}: checkpoint "
-                    f"{tuple(tensor.shape)} != model {tuple(parameter.shape)}"
-                )
-            parameter.copy_(tensor.to(device=parameter.device, dtype=parameter.dtype))
-            loaded += 1
-            del tensor, hf_tensors
-    return loaded
-
-
 def iter_hf_weights(
     model: torch.nn.Module,
     spec: K3WeightSpec,
@@ -559,18 +885,25 @@ def load_hf_weights(
     model: torch.nn.Module,
     path: str | Path,
     config: Any,
+    ps: Any,
 ) -> K3CheckpointManifest:
-    """Validate metadata first, then stream the public checkpoint tensor-wise."""
+    """Validate metadata, then delegate PP/TP/EP/ETP loading to MLite."""
     manifest = inspect_hf_checkpoint(path)
-    from megatron.lite.primitive.ckpt.hf_weights import SafeTensorReader
+    from megatron.lite.primitive.ckpt.hf_weights import (
+        SafeTensorReader,
+        load_hf_weights as load_with_primitive,
+    )
 
-    # Deliberately use the one-shot reader API: each tensor's shard mapping is
-    # closed before the next tensor, so a 96-shard release is never retained by
-    # one process as a collection of open mmap handles.
     reader = SafeTensorReader(str(path))
-    spec = K3WeightSpec(config)
+    spec = K3WeightSpec(config, manifest=manifest)
     audit_k3_weight_spec_sources(spec, reader.index)
-    load_weights_from_reader(model, reader, spec)
+    load_with_primitive(
+        model,
+        str(path),
+        spec,
+        ps,
+        vocab_size=config.vocab_size,
+    )
     return manifest
 
 
@@ -652,6 +985,7 @@ def audit_k3_weight_index(
 __all__ = [
     "K3CheckpointManifest",
     "K3QuantizationMetadata",
+    "K3RankWeight",
     "K3WeightSpec",
     "audit_k3_weight_spec_sources",
     "WeightIndexAudit",
@@ -660,7 +994,7 @@ __all__ = [
     "inspect_hf_checkpoint",
     "iter_hf_weights",
     "load_hf_weights",
-    "load_weights_from_reader",
     "parse_k3_quantization_metadata",
+    "plan_k3_rank_weights",
     "save_hf_weights",
 ]
