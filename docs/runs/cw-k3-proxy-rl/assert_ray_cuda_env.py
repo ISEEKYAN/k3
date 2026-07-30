@@ -24,6 +24,7 @@ ray.init(
     address="auto",
     runtime_env={
         "env_vars": {
+            "HYDRA_SITE": os.environ["HYDRA_SITE"],
             "PYTHONPATH": os.environ["PYTHONPATH"],
             "PYVERS_SITE": os.environ["PYVERS_SITE"],
             "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES": "1",

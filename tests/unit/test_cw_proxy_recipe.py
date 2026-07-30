@@ -50,7 +50,7 @@ def test_training_environment_preserves_three_pollution_boundaries():
     assert "TRAINING_VLLM_SITE" not in env
     assert "MLITE_SM90_SITE" not in env
     assert (
-        'export PYTHONPATH="${PYVERS_SITE}:${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
+        'export PYTHONPATH="${HYDRA_SITE}:${PYVERS_SITE}:${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
         in env
     )
     assert (
@@ -261,8 +261,9 @@ def test_tensordict_only_site_is_first_and_package_paths_fail_loud():
 
     assert "K3_TENSORDICT_SITE=" in image
     assert "K3_PYVERS_SITE=" in image
+    assert "K3_HYDRA_SITE=" in image
     assert (
-        'export PYTHONPATH="${PYVERS_SITE}:${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
+        'export PYTHONPATH="${HYDRA_SITE}:${PYVERS_SITE}:${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
         in env
     )
     for package in (
@@ -273,10 +274,14 @@ def test_tensordict_only_site_is_first_and_package_paths_fail_loud():
         "tensordict",
         "ray",
         "pyvers",
+        "hydra",
+        "omegaconf",
+        "antlr4",
     ):
         assert package in validate
     assert '"0.10.0"' in validate
     assert '"0.2.2"' in validate
+    assert '"1.3.3", "2.3.1", "4.9.3"' in validate
     assert "K3_RUNTIME_PACKAGE_PATHS_OK" in validate
 
 
