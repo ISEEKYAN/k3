@@ -18,6 +18,7 @@ def test_image_contract_reuses_the_proven_k3_vllm_overlay():
     assert "k3-vllm-main-prs-overlay" in image
     assert 'K3_VLLM_SITE="${K3_VLLM_OVERLAY}/lib/python3.12/site-packages"' in image
     assert "qwen35-cp-overlay-20260613/site" in image
+    assert "nvidia_cutlass_dsl/python_packages" in image
     assert "MLITE_SOURCE_SHA=85eacfbc1" in image
 
 
@@ -45,9 +46,9 @@ def test_training_environment_preserves_three_pollution_boundaries():
     assert "TRAINING_VLLM_SITE" not in env
     assert "MLITE_SM90_SITE" not in env
     assert 'export PYTHONPATH="${VLLM_SITE}:${FLA_SITE}:' in env
-    assert "${K3_ROOT}/src:${MEGATRON_ROOT}" not in env
     assert (
-        '${K3_ROOT}/src:${VERL_ROOT}:${VERL_DEPS_SITE}:'
+        '${FLA_SITE}:${CUTLASS_DSL_SITE}:${recipe_dir}:${K3_ROOT}/src:'
+        '${MEGATRON_ROOT}:${VERL_ROOT}:${VERL_DEPS_SITE}:'
         '${MLITE_ROOT}/experimental/lite/examples/verl:'
         '${MLITE_ROOT}/experimental/lite"'
     ) in env
@@ -91,6 +92,7 @@ def test_overlay_validation_is_inside_srun():
     assert '"transformer_engine_file": transformer_engine.__file__' in validation
     assert "import fla" in validation
     assert '"fla_file": fla.__file__' in validation
+    assert '"cutlass_cute_file": cutlass.cute.__file__' in validation
     assert 'fla_utils.device_platform == "cuda"' in validation
     assert "fla_utils.IS_NVIDIA" in validation
     assert "import megatron.lite" in validation
