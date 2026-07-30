@@ -253,3 +253,20 @@ def test_kda_backward_probe_is_one_gpu_and_uses_production_shape():
     assert '"backward_start"' in probe
     assert '"backward_done"' in probe
     assert "K3_KDA_BACKWARD_OK=" in probe
+
+
+def test_ep8_moe_backward_probe_uses_one_production_shape_layer():
+    carrier = read("probe_ep8_moe_backward.sbatch")
+    probe = read("probe_ep8_moe_backward.py")
+
+    assert "#SBATCH --partition=interactive" in carrier
+    assert "#SBATCH --gpus-per-node=8" in carrier
+    assert "#SBATCH --time=00:10:00" in carrier
+    assert "--nproc-per-node=8" in carrier
+    assert "ParallelLatentMoE" in probe
+    assert "ParallelConfig(tp=1, ep=8, etp=1, pp=1, cp=1)" in probe
+    assert "hidden = torch.randn(" in probe
+    assert "config.hidden_size" in probe
+    assert '"backward_start"' in probe
+    assert '"backward_done"' in probe
+    assert "K3_EP8_MOE_BACKWARD_OK=" in probe
