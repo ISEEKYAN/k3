@@ -86,7 +86,18 @@ archive_ray_logs() {
     cp -a "${RAY_TMPDIR}/." "${ray_log_archive}/"
   fi
 }
-trap archive_ray_logs EXIT
+cleanup_ray() {
+  env PYTHONPATH="${VLLM_SITE}" MLITE_K3_AUTO_REGISTER=0 \
+    ray stop --force || true
+  archive_ray_logs
+}
+trap cleanup_ray EXIT
+env PYTHONPATH="${VLLM_SITE}" MLITE_K3_AUTO_REGISTER=0 \
+  ray start --head \
+    --num-gpus=8 \
+    --disable-usage-stats \
+    --temp-dir="${RAY_TMPDIR}"
+export RAY_ADDRESS=auto
 
 log_file="${OUTPUT_ROOT}/${RUN_NAME}.launcher.log"
 mkdir -p "${OUTPUT_ROOT}"

@@ -34,18 +34,23 @@ archive_ray_logs() {
     cp -a "${RAY_TMPDIR}/." "${ray_log_archive}/"
   fi
 }
-trap archive_ray_logs EXIT
+cleanup_ray() {
+  env PYTHONPATH="${VLLM_SITE}" MLITE_K3_AUTO_REGISTER=0 \
+    ray stop --force || true
+  archive_ray_logs
+}
+trap cleanup_ray EXIT
+env PYTHONPATH="${VLLM_SITE}" MLITE_K3_AUTO_REGISTER=0 \
+  ray start --head \
+    --num-cpus=1 \
+    --disable-usage-stats \
+    --temp-dir="${RAY_TMPDIR}"
+export RAY_ADDRESS=auto
 
 python3 - <<'"'"'PY'"'"'
-import os
-
 import ray
 
-context = ray.init(
-    num_cpus=1,
-    include_dashboard=False,
-    _temp_dir=os.environ["RAY_TMPDIR"],
-)
+context = ray.init(address="auto")
 print(
     "K3_RAY_STARTUP_OK"
     f" address={context.address_info['address']}"
