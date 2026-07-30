@@ -128,6 +128,19 @@ def test_build_proxy_rewrites_index_and_drops_out_of_scope_tensors(tmp_path):
         },
     }
     (source / "config.json").write_text(json.dumps(config))
+    (source / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "auto_map": {
+                    "AutoTokenizer": [
+                        "tokenization_kimi.TikTokenTokenizer",
+                        None,
+                    ]
+                }
+            }
+        )
+    )
+    (source / "tokenization_kimi.py").write_text("class TikTokenTokenizer: pass\n")
     names = {
         "language_model.model.embed_tokens.weight": torch.ones(2, 2),
         "language_model.model.layers.1.block_sparse_moe.gate.weight": torch.ones(
@@ -171,3 +184,6 @@ def test_build_proxy_rewrites_index_and_drops_out_of_scope_tensors(tmp_path):
     assert output_tensors[
         "language_model.model.layers.1.block_sparse_moe.gate.e_score_correction_bias"
     ].shape == (56,)
+    assert (output / "tokenization_kimi.py").read_text() == (
+        "class TikTokenTokenizer: pass\n"
+    )

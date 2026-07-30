@@ -30,6 +30,41 @@ _COPY_METADATA = (
 )
 
 
+def auto_map_code_files(*documents: dict) -> set[Path]:
+    """Return local Python files referenced by nested Hugging Face auto maps."""
+    references: set[str] = set()
+
+    def collect_reference(value) -> None:
+        if isinstance(value, str):
+            references.add(value)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                collect_reference(item)
+
+    def visit(value) -> None:
+        if isinstance(value, dict):
+            auto_map = value.get("auto_map")
+            if isinstance(auto_map, dict):
+                for reference in auto_map.values():
+                    collect_reference(reference)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    for document in documents:
+        visit(document)
+
+    files = set()
+    for reference in references:
+        if "." not in reference:
+            continue
+        module = reference.rsplit(".", 1)[0].split("--")[-1]
+        files.add(Path(*module.split(".")).with_suffix(".py"))
+    return files
+
+
 def keep_weight(name: str, *, layers: int, experts: int) -> bool:
     layer = _LAYER.search(name)
     if layer is not None and int(layer.group(1)) >= layers:
@@ -78,6 +113,22 @@ def build_proxy(source: Path, output: Path, *, layers: int, experts: int) -> Non
         path = source / name
         if path.is_file():
             shutil.copy2(path, output / name)
+    metadata_documents = [source_config]
+    for name in _COPY_METADATA:
+        if not name.endswith(".json"):
+            continue
+        path = source / name
+        if path.is_file():
+            metadata_documents.append(json.loads(path.read_text()))
+    for relative_path in sorted(auto_map_code_files(*metadata_documents)):
+        source_path = source / relative_path
+        if not source_path.is_file():
+            raise RuntimeError(
+                f"auto_map references missing local code file: {source_path}"
+            )
+        output_path = output / relative_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, output_path)
 
     index = json.loads((source / "model.safetensors.index.json").read_text())
     selected = {
