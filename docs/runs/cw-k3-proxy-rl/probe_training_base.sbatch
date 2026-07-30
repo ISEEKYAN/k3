@@ -36,6 +36,8 @@ export CUDA_HOME=/usr/local/cuda
 export PATH=/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
+export TILELANG_CACHE_DIR="${SLURM_TMPDIR:-/tmp}/k3-tilelang-cache"
+export TILELANG_TMP_DIR="${SLURM_TMPDIR:-/tmp}/k3-tilelang-tmp"
 export PYTHONPATH="'"${K3_ROOT}"'/src:'"${MLITE_ROOT}"'/experimental/lite:'"${MLITE_ROOT}"'/experimental/lite/examples/verl:'"${megatron_root}"':'"${VERL_ROOT}"':'"${vllm_site}"':'"${qwen35_site}"':'"${mlite_sm90_site}"'/nvidia_cutlass_dsl/python_packages:'"${mlite_sm90_site}"':'"${verl_deps}"'"
 /usr/bin/python3 "'"${recipe_dir}"'/probe_training_base.py"
 '

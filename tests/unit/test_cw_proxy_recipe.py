@@ -109,6 +109,8 @@ def test_training_base_probe_reuses_proven_pytorch_and_rollout_overlays():
     assert "mlite-newenv-cache/qwen35-proven-canary-site" in probe
     assert "ds4-csacp-parity-eaa5b486d/mcore" in probe
     assert "OMP_NUM_THREADS=1" in probe
+    assert "TILELANG_CACHE_DIR" in probe
+    assert "TILELANG_TMP_DIR" in probe
     assert "pip install" not in probe
 
 
