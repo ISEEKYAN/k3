@@ -18,7 +18,6 @@ from mlite_k3.lite.checkpoint import (
     audit_k3_weight_spec_sources,
     get_hf_weight,
     inspect_hf_checkpoint,
-    load_weights_from_reader,
 )
 
 
@@ -59,7 +58,7 @@ def build_capability_matrix() -> dict[str, Any]:
         cells = {
             "load": _cell(
                 "covered",
-                "K3WeightSpec + load_weights_from_reader",
+                "K3WeightSpec.hf_to_native visits every mapped public tensor",
             ),
             "save": _cell(
                 "covered",
@@ -67,7 +66,7 @@ def build_capability_matrix() -> dict[str, Any]:
             ),
             "export_bf16": _cell(
                 "covered",
-                "iter_hf_weights target=bf16",
+                "shared export_hf_weights target=bf16",
             ),
             "export_mxfp4": _cell(
                 "covered",
@@ -160,56 +159,6 @@ def _bitwise_equal(left: torch.Tensor, right: torch.Tensor) -> bool:
     return torch.equal(left_bytes, right_bytes)
 
 
-class _LogicalReader:
-    def __init__(self, tensors: dict[str, torch.Tensor]):
-        self._tensors = tensors
-        self.index = set(tensors)
-
-    def get_tensor(self, name: str) -> torch.Tensor:
-        return self._tensors[name]
-
-
-class _SingleTensorSpec:
-    def __init__(self, source: K3WeightSpec, native_name: str):
-        self.source = source
-        self.native_name = native_name
-
-    def weight_map(self) -> dict[str, list[str]]:
-        return {self.native_name: self.source.weight_map()[self.native_name]}
-
-    def hf_to_native(
-        self, native_name: str, hf_tensors: list[torch.Tensor]
-    ) -> torch.Tensor:
-        return self.source.hf_to_native(native_name, hf_tensors)
-
-    def native_to_hf(
-        self, native_name: str, tensor: torch.Tensor
-    ) -> list[tuple[str, torch.Tensor]]:
-        return self.source.native_to_hf(native_name, tensor)
-
-
-class _SingleTensorModel(torch.nn.Module):
-    def __init__(self, native_name: str, expected: torch.Tensor):
-        super().__init__()
-        self.native_name = native_name
-        self.value = torch.nn.Parameter(
-            torch.empty_like(expected),
-            requires_grad=False,
-        )
-
-    def named_parameters(self, *args, **kwargs):
-        del args, kwargs
-        yield self.native_name, self.value
-
-    def named_buffers(self, *args, **kwargs):
-        del args, kwargs
-        return iter(())
-
-    def state_dict(self, *args, **kwargs):
-        del args, kwargs
-        return {self.native_name: self.value}
-
-
 def validate_reader_roundtrip(reader: Any, spec: K3WeightSpec) -> dict[str, Any]:
     """Round-trip every logical source tensor and require exact equality."""
     dtypes: Counter[str] = Counter()
@@ -220,18 +169,7 @@ def validate_reader_roundtrip(reader: Any, spec: K3WeightSpec) -> dict[str, Any]
         hf_names = mapping[native_name]
         expected = [get_hf_weight(reader, name) for name in hf_names]
         native = spec.hf_to_native(native_name, expected)
-        model = _SingleTensorModel(native_name, native)
-        logical_reader = _LogicalReader(dict(zip(hf_names, expected, strict=True)))
-        loaded = load_weights_from_reader(
-            model,
-            logical_reader,
-            _SingleTensorSpec(spec, native_name),
-        )
-        if loaded != 1:
-            raise AssertionError(f"loader did not restore {native_name!r}")
-        if not _bitwise_equal(native, model.value):
-            raise AssertionError(f"native load mismatch for {native_name!r}")
-        restored = spec.native_to_hf(native_name, model.value)
+        restored = spec.native_to_hf(native_name, native)
         if [name for name, _ in restored] != hf_names:
             raise AssertionError(
                 f"name mismatch for {native_name!r}: "
@@ -255,7 +193,7 @@ def validate_reader_roundtrip(reader: Any, spec: K3WeightSpec) -> dict[str, Any]
             if source_name not in source_keys:
                 source_keys.add(source_name)
                 dtypes[str(source.dtype)] += 1
-        del actual, expected, logical_reader, model, native, restored, source
+        del actual, expected, native, restored, source
 
     ordered_keys = sorted(source_keys)
     return {

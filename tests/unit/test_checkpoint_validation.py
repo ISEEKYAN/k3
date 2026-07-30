@@ -118,7 +118,7 @@ def test_report_is_not_published_when_any_tensor_is_not_bitwise_equal(tmp_path):
     class _CorruptingSpec(K3WeightSpec):
         def native_to_hf(self, native_name, tensor):
             restored = super().native_to_hf(native_name, tensor)
-            if native_name == "embed_tokens.weight":
+            if native_name == "embed_tokens.embedding.weight":
                 name, value = restored[0]
                 value = value.clone()
                 value.flatten()[0] = -0.0
