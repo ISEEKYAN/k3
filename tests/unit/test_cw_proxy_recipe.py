@@ -127,6 +127,7 @@ def test_python_dev_header_probe_is_short_cpu_srun():
     assert "#SBATCH --time=00:05:00" in probe
     assert '--container-image="${K3_TRAINING_IMAGE}"' in probe
     assert "srun" in probe
+    assert "--export=NONE" in probe
     assert "sysconfig.get_paths" in probe
     assert "pyconfig.h" in probe
     assert "Python.h" in probe

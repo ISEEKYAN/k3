@@ -15,6 +15,7 @@ source "${recipe_dir}/image.env"
 
 srun \
   --account=coreai_devtech_all \
+  --export=NONE \
   --container-image="${K3_TRAINING_IMAGE}" \
   --container-mounts=/lustre:/lustre \
   /bin/bash --noprofile --norc -c '
