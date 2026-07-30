@@ -295,10 +295,6 @@ def test_container_python_and_pruned_verl_site_fail_loud():
         "wandb",
     ):
         assert package in validate
-    assert '"hydra": ("hydra", verl_pruned_site)' in validate
-    assert '"codetiming": ("codetiming", verl_pruned_site)' in validate
-    assert '"orjson": ("orjson", verl_pruned_site)' in validate
-    assert '"accelerate": ("accelerate", verl_pruned_site)' in validate
     assert '"omegaconf":' not in validate
     assert '"antlr4":' not in validate
     assert '"0.10.0"' in validate
@@ -317,6 +313,15 @@ def test_container_python_and_pruned_verl_site_fail_loud():
     assert "os.path.realpath(actual)" in validate
     assert "os.path.realpath(expected_root) + os.sep" in validate
     assert ".is_relative_to(" not in validate
+    for package in (
+        "tensordict",
+        "pyvers",
+        "hydra",
+        "codetiming",
+        "orjson",
+        "accelerate",
+    ):
+        assert f'"{package}": ("{package}", verl_pruned_site / "{package}")' in validate
     readme = read("README.md")
     assert "pyvers 0.2.2" in readme
     assert "pyvers<0.2.0" in readme

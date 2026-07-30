@@ -27,7 +27,7 @@ def assert_runtime_package_paths() -> dict[str, object]:
     torch_file = Path(torch.__file__).absolute()
     if "nv26.05" not in torch.__version__:
         raise RuntimeError(f"host torch leaked into container: {torch.__version__}")
-    if not is_within_root(torch_file, container_site):
+    if not is_within_root(torch_file, container_site / "torch"):
         raise RuntimeError(f"torch resolved outside container site: {torch_file}")
     container_python = {
         "python_executable": sys.executable,
@@ -43,19 +43,22 @@ def assert_runtime_package_paths() -> dict[str, object]:
     verl_pruned_site = Path(os.environ["VERL_PRUNED_SITE"]).absolute()
     base_site = Path(os.environ["VERL_DEPS_SITE"]).absolute()
     expected_modules = {
-        "huggingface_hub": ("huggingface_hub", base_site),
-        "transformers": ("transformers", vllm_site),
-        "vllm": ("vllm", vllm_site),
+        "huggingface_hub": (
+            "huggingface_hub",
+            base_site / "huggingface_hub",
+        ),
+        "transformers": ("transformers", vllm_site / "transformers"),
+        "vllm": ("vllm", vllm_site / "vllm"),
         # This vLLM build names its ABI-stable CUDA extension explicitly.
-        "vllm._C": ("vllm._C_stable_libtorch", vllm_site),
-        "ray": ("ray", vllm_site),
-        "wandb": ("wandb", vllm_site),
-        "tensordict": ("tensordict", verl_pruned_site),
-        "pyvers": ("pyvers", verl_pruned_site),
-        "hydra": ("hydra", verl_pruned_site),
-        "codetiming": ("codetiming", verl_pruned_site),
-        "orjson": ("orjson", verl_pruned_site),
-        "accelerate": ("accelerate", verl_pruned_site),
+        "vllm._C": ("vllm._C_stable_libtorch", vllm_site / "vllm"),
+        "ray": ("ray", vllm_site / "ray"),
+        "wandb": ("wandb", vllm_site / "wandb"),
+        "tensordict": ("tensordict", verl_pruned_site / "tensordict"),
+        "pyvers": ("pyvers", verl_pruned_site / "pyvers"),
+        "hydra": ("hydra", verl_pruned_site / "hydra"),
+        "codetiming": ("codetiming", verl_pruned_site / "codetiming"),
+        "orjson": ("orjson", verl_pruned_site / "orjson"),
+        "accelerate": ("accelerate", verl_pruned_site / "accelerate"),
     }
     resolved: dict[str, str] = {}
     for label, (module_name, expected_site) in expected_modules.items():
