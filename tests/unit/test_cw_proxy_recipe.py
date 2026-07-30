@@ -71,3 +71,13 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "enable_rollout_routing_replay=True" in runner
     assert "sleep 120" in runner
     assert "sleep 180" in runner
+
+
+def test_proxy_checkpoint_build_is_a_zero_gpu_srun():
+    builder = read("build_proxy_checkpoint.sbatch")
+
+    assert "#SBATCH --partition=cpu_short" in builder
+    assert "--gpus" not in builder
+    assert "srun" in builder
+    assert "--layers 12" in builder
+    assert "--experts 56" in builder
