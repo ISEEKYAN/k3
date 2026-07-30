@@ -36,8 +36,13 @@ srun \
 set -euo pipefail
 export PYTHONNOUSERSITE=1
 export OMP_NUM_THREADS=1
-export PATH="/usr/local/cuda/bin:${PATH}"
-export LD_LIBRARY_PATH="/usr/local/cuda/compat/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+export CUDA_HOME=/usr/local/cuda-13.0
+export PATH="${CUDA_HOME}/bin:${PATH}"
+base_python_site=/usr/local/lib/python3.12/dist-packages
+base_cudnn_root="${base_python_site}/nvidia/cudnn"
+export CPATH="${base_cudnn_root}/include${CPATH:+:${CPATH}}"
+export CPLUS_INCLUDE_PATH="${base_cudnn_root}/include${CPLUS_INCLUDE_PATH:+:${CPLUS_INCLUDE_PATH}}"
+export LD_LIBRARY_PATH="${CUDA_HOME}/compat:${CUDA_HOME}/targets/x86_64-linux/lib:${base_cudnn_root}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 export CUDAHOSTCXX=/usr/bin/g++
@@ -61,16 +66,8 @@ mkdir -p "${PIP_CACHE_DIR}"
   --no-deps \
   --target "${TE_OVERLAY}/cuda-toolchain" \
   -r "'"${recipe_dir}"'/te-build-requirements.txt"
-nvcc=$(find "${TE_OVERLAY}/cuda-toolchain" -type f -name nvcc -print -quit)
-if [[ -z "${nvcc}" ]]; then
-  echo "FATAL nvidia-cuda-nvcc==13.0.88 did not provide nvcc" >&2
-  exit 2
-fi
-export CUDA_HOME
-CUDA_HOME=$(dirname "$(dirname "${nvcc}")")
-export PATH="${CUDA_HOME}/bin:${PATH}"
 export PYTHONPATH="${TE_OVERLAY}/cuda-toolchain"
-"${nvcc}" --version
+nvcc --version
 
 /usr/bin/python3 -m pip install \
   --no-cache-dir \

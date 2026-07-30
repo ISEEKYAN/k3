@@ -87,13 +87,20 @@ def test_te_audit_uses_node_local_dependencies_and_reports_missing_git():
     sbatch = read("audit_te_build_env.sbatch")
     audit = read("audit_te_build_env.py")
     build = read("build_te_overlay.sbatch")
+    requirements = read("te-build-requirements.txt")
 
     assert "SLURM_TMPDIR" in sbatch
+    assert "CUDA_HOME=/usr/local/cuda-13.0" in sbatch
     assert "TE_SUBMODULE_STATUS" in sbatch
     assert 'command("git", "--version")' in audit
     assert '"required": False' in audit
     assert '"tmp_disk"' in audit
+    assert '"cuda_header_smoke"' in audit
     assert "FileNotFoundError" not in audit
+    assert "nvidia-cuda-nvcc" not in requirements
+    assert "CUDA_HOME=/usr/local/cuda-13.0" in build
+    assert "nvidia/cudnn" in build
+    assert "base_cudnn_root}/include" in build
     assert "PIP_CACHE_DIR" in build
     assert "TMPDIR" in build
     assert "--no-cache-dir" in build

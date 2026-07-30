@@ -2,7 +2,6 @@
 cmake==4.0.3
 ninja==1.13.0
 nvidia-cudnn-frontend==1.26.0
-nvidia-cuda-nvcc==13.0.88
 pybind11==3.0.1
 setuptools==80.9.0
 wheel==0.45.1

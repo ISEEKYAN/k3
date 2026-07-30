@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 
@@ -43,12 +44,39 @@ def distribution(name: str) -> dict[str, object]:
 
 def main() -> None:
     te_source = Path(os.environ["TE_SOURCE"]).resolve()
+    build_deps = Path(os.environ["TE_BUILD_DEPS"]).resolve()
     tmp_dir = Path(os.environ["TE_BUILD_TMPDIR"]).resolve()
     min_tmp_bytes = int(os.environ.get("TE_MIN_TMP_BYTES", str(20 * 1024**3)))
     tmp_usage = shutil.disk_usage(tmp_dir)
     sys.path.insert(0, str(te_source))
     from build_tools import utils
 
+    cuda_include = Path(os.environ["CUDA_HOME"]) / "targets/x86_64-linux/include"
+    cudnn_include = Path(sysconfig.get_paths()["purelib"]) / "nvidia/cudnn/include"
+    frontend_include = build_deps / "include"
+    header_groups = {
+        "cuda_headers": (
+            cuda_include,
+            [
+                "cuda.h",
+                "cuda_fp4.h",
+                "cuda_fp8.h",
+                "cuda_runtime.h",
+                "cublasLt.h",
+                "cublas_v2.h",
+                "nvrtc.h",
+                "cccl/cuda/barrier",
+            ],
+        ),
+        "cudnn_headers": (
+            cudnn_include,
+            ["cudnn.h", "cudnn_graph.h"],
+        ),
+        "cudnn_frontend_headers": (
+            frontend_include,
+            ["cudnn_frontend.h", "cudnn_frontend_utils.h"],
+        ),
+    }
     checks: dict[str, object] = {
         "python": {
             "ok": sys.version_info >= utils.min_python_version(),
@@ -77,9 +105,44 @@ def main() -> None:
         "gcc": command(os.environ.get("CC", "gcc"), "--version"),
         "gxx": command(os.environ.get("CXX", "g++"), "--version"),
         "nvcc": command("nvcc", "--version"),
-        "nvidia-cuda-nvcc": distribution("nvidia-cuda-nvcc"),
         "nvidia-cudnn-frontend": distribution("nvidia-cudnn-frontend"),
     }
+    for name, (root, headers) in header_groups.items():
+        missing = [header for header in headers if not (root / header).is_file()]
+        checks[name] = {
+            "ok": not missing,
+            "root": str(root),
+            "headers": headers,
+            "missing": missing,
+        }
+    smoke_source = tmp_dir / "te_cuda_header_smoke.cu"
+    smoke_object = tmp_dir / "te_cuda_header_smoke.o"
+    smoke_source.write_text(
+        """
+#include <cuda/barrier>
+#include <cuda_runtime.h>
+#include <cublas_v2.h>
+#include <cublasLt.h>
+#include <nvrtc.h>
+#include <cudnn.h>
+#include <cudnn_graph.h>
+#include <cudnn_frontend.h>
+__global__ void te_cuda_header_smoke() {}
+""",
+        encoding="utf-8",
+    )
+    checks["cuda_header_smoke"] = command(
+        "nvcc",
+        "-std=c++17",
+        "-I",
+        str(cudnn_include),
+        "-I",
+        str(frontend_include),
+        "-c",
+        str(smoke_source),
+        "-o",
+        str(smoke_object),
+    )
     probes = {
         "nvcc_path": utils.nvcc_path,
         "cuda_version": utils.cuda_version,

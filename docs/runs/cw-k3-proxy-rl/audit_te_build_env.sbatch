@@ -29,6 +29,8 @@ export OMP_NUM_THREADS=1
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 export CUDAHOSTCXX=/usr/bin/g++
+export CUDA_HOME=/usr/local/cuda-13.0
+export PATH="${CUDA_HOME}/bin:${PATH}"
 export NVTE_FRAMEWORK=pytorch
 export NVTE_CUDA_ARCHS=90
 export NVTE_WITH_NCCL_EP=0
@@ -41,12 +43,6 @@ export TE_BUILD_DEPS
   --no-deps \
   --target "${TE_BUILD_DEPS}" \
   -r "'"${recipe_dir}"'/te-build-requirements.txt"
-nvcc=$(find "${TE_BUILD_DEPS}" -type f -name nvcc -print -quit)
-if [[ -n "${nvcc}" ]]; then
-  export CUDA_HOME
-  CUDA_HOME=$(dirname "$(dirname "${nvcc}")")
-  export PATH="${CUDA_HOME}/bin:${PATH}"
-fi
 export PYTHONPATH="${TE_BUILD_DEPS}"
 /usr/bin/python3 "'"${recipe_dir}"'/audit_te_build_env.py"
 '
