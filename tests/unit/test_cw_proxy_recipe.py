@@ -215,6 +215,11 @@ def test_fail_local_gpu_carrier_has_four_ordered_stages():
     assert "OMP_NUM_THREADS" in read("k3_training_env.sh")
     assert "ps -C python3" in carrier
     assert "ps -eo pid,ppid,stat,etime,cmd --forest" not in carrier
+    assert "--export=ALL" not in carrier
+    assert (
+        "--export=STAGE,MODEL_PATH,K3_ROOT,MLITE_ROOT,VERL_ROOT,"
+        "VERL_DEPS_SITE,K3_CACHE_ROOT"
+    ) in carrier
 
 
 def test_proxy_stage_emits_fail_local_phase_markers():

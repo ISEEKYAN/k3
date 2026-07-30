@@ -43,7 +43,7 @@ set +e
 srun \
   --container-image="${K3_TRAINING_IMAGE}" \
   --container-mounts=/lustre:/lustre \
-  --export=ALL \
+  --export=STAGE,MODEL_PATH,K3_ROOT,MLITE_ROOT,VERL_ROOT,VERL_DEPS_SITE,K3_CACHE_ROOT \
   /bin/bash --noprofile --norc -c '
 set -euo pipefail
 source "'"${recipe_dir}"'/k3_training_env.sh"
