@@ -236,3 +236,20 @@ def test_proxy_stage_emits_fail_local_phase_markers():
         "backward_done",
     ):
         assert f'"{phase}"' in runner
+
+
+def test_kda_backward_probe_is_one_gpu_and_uses_production_shape():
+    carrier = read("probe_kda_backward.sbatch")
+    probe = read("probe_kda_backward.py")
+
+    assert "#SBATCH --partition=interactive" in carrier
+    assert "#SBATCH --gpus-per-node=1" in carrier
+    assert "#SBATCH --time=00:10:00" in carrier
+    assert "--export=K3_ROOT,MLITE_ROOT,VERL_ROOT,VERL_DEPS_SITE,K3_CACHE_ROOT" in carrier
+    assert "sleep 120" in carrier
+    assert "sleep 180" in carrier
+    assert "backend=\"fla\"" in probe
+    assert "shape = (1, 16, 96, 128)" in probe
+    assert '"backward_start"' in probe
+    assert '"backward_done"' in probe
+    assert "K3_KDA_BACKWARD_OK=" in probe
