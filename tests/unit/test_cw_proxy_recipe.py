@@ -285,3 +285,16 @@ def test_ep8_moe_backward_probe_can_isolate_multiple_layers():
     assert '"forward_layer_done"' in probe
     assert '"backward_layer_enter"' in probe
     assert '"layers": layers' in probe
+
+
+def test_ep8_decoder_probe_covers_kda_mla_dense_and_moe_blocks():
+    carrier = read("probe_ep8_decoder_backward.sbatch")
+    probe = read("probe_ep8_decoder_backward.py")
+
+    assert "#SBATCH --gpus-per-node=8" in carrier
+    assert "DECODER_LAYERS" in carrier
+    assert "K3ParallelDecoderLayer" in probe
+    assert "range(layers)" in probe
+    assert "block_residual" in probe
+    assert '"backward_layer_enter"' in probe
+    assert "K3_EP8_DECODER_BACKWARD_OK=" in probe
