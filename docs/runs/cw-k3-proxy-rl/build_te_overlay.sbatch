@@ -29,7 +29,7 @@ fi
 
 mkdir -p "${TE_OVERLAY}"
 srun \
-  --container-image="${K3_IMAGE}" \
+  --container-image="${K3_RUNTIME_IMAGE}" \
   --container-mounts=/lustre:/lustre \
   --export=ALL \
   /bin/bash --noprofile --norc -c '
@@ -45,7 +45,7 @@ export CMAKE_BUILD_PARALLEL_LEVEL="${SLURM_CPUS_PER_TASK:-32}"
 export MAX_JOBS="${SLURM_CPUS_PER_TASK:-32}"
 export NVTE_FRAMEWORK=pytorch
 export NVTE_CUDA_ARCHS=90
-# The K3 training path uses TE PyTorch modules, not TE's optional NCCL-EP
+# The K3 training path uses TE PyTorch modules, not the optional TE NCCL-EP
 # extension. The published image exposes versioned NCCL runtime libraries but
 # no development linker name, so fail-loudly disable only that optional build.
 export NVTE_WITH_NCCL_EP=0

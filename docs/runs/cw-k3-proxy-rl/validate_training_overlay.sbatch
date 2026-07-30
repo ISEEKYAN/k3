@@ -15,7 +15,7 @@ recipe_dir="${K3_RECIPE_DIR:-${SLURM_SUBMIT_DIR:-$(pwd -L)}}"
 source "${recipe_dir}/image.env"
 
 srun \
-  --container-image="${K3_IMAGE}" \
+  --container-image="${K3_RUNTIME_IMAGE}" \
   --container-mounts=/lustre:/lustre \
   --export=ALL \
   /bin/bash --noprofile --norc -c '

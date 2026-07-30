@@ -24,7 +24,7 @@ if [[ -e "${K3_PROXY_CHECKPOINT}" ]]; then
 fi
 
 srun \
-  --container-image="${K3_IMAGE}" \
+  --container-image="${K3_RUNTIME_IMAGE}" \
   --container-mounts=/lustre:/lustre \
   --export=ALL \
   /bin/bash --noprofile --norc -c '

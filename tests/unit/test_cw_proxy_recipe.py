@@ -17,6 +17,23 @@ def test_image_contract_uses_x86_multiarch_k3_release():
     assert "K3_IMAGE_INDEX_DIGEST=sha256:" in image
     assert "K3_IMAGE_AMD64_DIGEST=sha256:" in image
     assert "MLITE_SOURCE_SHA=85eacfbc1" in image
+    assert "K3_RUNTIME_IMAGE" in image
+
+
+def test_image_cache_recipe_saves_once_and_runtime_recipes_reuse_it():
+    cache = read("cache_image.sbatch")
+
+    assert '--container-image="${K3_IMAGE}"' in cache
+    assert '--container-save="${K3_IMAGE_SQSH}"' in cache
+    for name in (
+        "audit_te_build_env.sbatch",
+        "build_proxy_checkpoint.sbatch",
+        "build_te_overlay.sbatch",
+        "run_proxy_qat_r3.sbatch",
+        "run_proxy_stage.sbatch",
+        "validate_training_overlay.sbatch",
+    ):
+        assert '--container-image="${K3_RUNTIME_IMAGE}"' in read(name)
 
 
 def test_training_environment_preserves_three_pollution_boundaries():

@@ -12,10 +12,15 @@ checkpoint and rewrites both the config and safetensors index.
 
 Required overlay inputs:
 
+- an immutable local `.sqsh` produced once by `cache_image.sbatch`;
 - a Python 3.12 Transformer Engine site built from the pinned source;
 - the pinned Megatron-LM/MLite and VERL source trees;
 - a VERL dependency site that does not replace image-owned torch, vLLM,
   Transformers, FLA, torchcodec, CUTLASS, or CUDA libraries.
+
+Set `K3_IMAGE_SQSH` to a new shared path and run `cache_image.sbatch` once.
+The job uses pyxis `--container-save`, records the squashfs SHA-256, and all
+remaining recipes reuse that file instead of importing Docker layers again.
 
 Run `validate_training_overlay.sbatch` first. Its import test is deliberately
 inside `srun`; login-node imports are not evidence. Then submit
@@ -39,6 +44,8 @@ python3 tools/build_proxy_checkpoint.py \
   --source /path/to/Kimi-K3 \
   --output /shared/checkpoints/Kimi-K3-12l-56e
 
+export K3_IMAGE_SQSH=/shared/images/kimi-k3-amd64.sqsh
+sbatch --export=ALL cache_image.sbatch
 sbatch --export=ALL validate_training_overlay.sbatch
 sbatch --export=ALL run_proxy_qat_r3.sbatch
 ```
