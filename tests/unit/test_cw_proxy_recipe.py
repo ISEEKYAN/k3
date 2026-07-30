@@ -104,6 +104,9 @@ def test_te_audit_uses_node_local_dependencies_and_reports_missing_git():
     assert "PIP_CACHE_DIR" in build
     assert "TMPDIR" in build
     assert "--no-cache-dir" in build
+    assert "te_build_source" in build
+    assert "--exclude=./build" in build
+    assert '"${te_build_source}"' in build
 
 
 def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():

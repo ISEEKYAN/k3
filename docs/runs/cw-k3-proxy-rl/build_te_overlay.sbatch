@@ -60,6 +60,19 @@ export TMPDIR
 TMPDIR=$(mktemp -d "${build_tmp_root}/k3-te-build.XXXXXX")
 export PIP_CACHE_DIR="${TMPDIR}/pip-cache"
 mkdir -p "${PIP_CACHE_DIR}"
+te_build_source="${TMPDIR}/transformer-engine"
+mkdir -p "${te_build_source}"
+tar \
+  -C "${TE_SOURCE}" \
+  --exclude=./build \
+  --exclude=./.git \
+  --exclude=./*.egg-info \
+  -cf - . | tar -C "${te_build_source}" -xf -
+if [[ -e "${te_build_source}/build" ]]; then
+  echo "FATAL isolated TE source retained a stale build directory" >&2
+  exit 2
+fi
+echo "TE_BUILD_SOURCE_OK source=${te_build_source}"
 
 /usr/bin/python3 -m pip install \
   --no-cache-dir \
@@ -74,7 +87,7 @@ nvcc --version
   --no-deps \
   --no-build-isolation \
   --target "${TE_OVERLAY}" \
-  "${TE_SOURCE}"
+  "${te_build_source}"
 
 PYTHONPATH="${TE_OVERLAY}" /usr/bin/python3 "'"${recipe_dir}"'/validate_te.py"
 '
