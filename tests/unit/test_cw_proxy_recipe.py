@@ -84,10 +84,8 @@ def test_overlay_validation_is_inside_srun():
     assert "import megatron.lite" in validation
     assert '"megatron_lite": megatron.lite.__file__' in validation
     assert '"megatron_lite_version": os.environ["MLITE_SOURCE_SHA"]' in validation
-    assert "import mlite_k3" in validation
-    assert "import verl" in validation
-    assert 'import_module("verl.trainer.main_ppo")' in validation
-    assert 'import_module("verl_mlite.engine.mlite_engine")' in validation
+    assert "import mlite_k3" not in validation
+    assert "import verl" not in validation
 
 
 def test_te_binary_probe_is_short_cpu_srun_and_never_builds_source():
