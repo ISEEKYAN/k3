@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -55,11 +56,10 @@ def main() -> None:
 
     cuda_include = Path(os.environ["CUDA_HOME"]) / "targets/x86_64-linux/include"
     cudnn_include = Path(sysconfig.get_paths()["purelib"]) / "nvidia/cudnn/include"
-    nvtx_source_include = (
-        Path(sysconfig.get_paths()["purelib"]) / "nvidia/cu13/include"
-    )
+    nvtx_source_include = Path(sysconfig.get_paths()["purelib"]) / "nvidia/cu13/include"
     nccl_include = Path(sysconfig.get_paths()["purelib"]) / "nvidia/nccl/include"
     frontend_include = build_deps / "include"
+    profiler_source_include = build_deps / "nvidia/cu13/include"
     nvtx_include = frontend_include
     nvtx_source_dir = nvtx_source_include / "nvtx3"
     if nvtx_source_dir.is_dir():
@@ -68,6 +68,9 @@ def main() -> None:
             nvtx_include / "nvtx3",
             dirs_exist_ok=True,
         )
+    profiler_header = profiler_source_include / "cuda_profiler_api.h"
+    if profiler_header.is_file():
+        shutil.copy2(profiler_header, frontend_include / profiler_header.name)
     header_groups = {
         "cuda_headers": (
             cuda_include,
@@ -128,10 +131,43 @@ def main() -> None:
         "gxx": command(os.environ.get("CXX", "g++"), "--version"),
         "nvcc": command("nvcc", "--version"),
         "nvidia-cudnn-frontend": distribution("nvidia-cudnn-frontend"),
+        "nvidia-cuda-profiler-api": distribution("nvidia-cuda-profiler-api"),
         "nvtx_source": {
             "ok": nvtx_source_dir.is_dir(),
             "value": str(nvtx_source_dir),
         },
+    }
+    source_include_pattern = re.compile(
+        r"""^\s*#\s*include\s*[<"]((?:cuda|cublas|cudnn|nvrtc|nvtx3|nccl)[^">]+)[">]"""
+    )
+    source_suffixes = {".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp"}
+    required_cuda_headers: set[str] = set()
+    for source_path in (te_source / "transformer_engine").rglob("*"):
+        if not source_path.is_file() or source_path.suffix not in source_suffixes:
+            continue
+        for line in source_path.read_text(
+            encoding="utf-8", errors="ignore"
+        ).splitlines():
+            match = source_include_pattern.match(line)
+            if match:
+                required_cuda_headers.add(match.group(1))
+    system_include_roots = [
+        cuda_include,
+        cuda_include / "cccl",
+        cudnn_include,
+        frontend_include,
+        nccl_include,
+    ]
+    missing_source_headers = [
+        header
+        for header in sorted(required_cuda_headers)
+        if not any((root / header).is_file() for root in system_include_roots)
+    ]
+    checks["te_source_cuda_headers"] = {
+        "ok": not missing_source_headers,
+        "count": len(required_cuda_headers),
+        "missing": missing_source_headers,
+        "roots": [str(root) for root in system_include_roots],
     }
     for name, (root, headers) in header_groups.items():
         missing = [header for header in headers if not (root / header).is_file()]
@@ -146,6 +182,7 @@ def main() -> None:
     smoke_source.write_text(
         """
 #include <cuda/barrier>
+#include <cuda_profiler_api.h>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <cublasLt.h>

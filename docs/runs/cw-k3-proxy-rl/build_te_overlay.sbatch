@@ -85,7 +85,11 @@ echo "TE_BUILD_SOURCE_OK source=${te_build_source}"
   -r "'"${recipe_dir}"'/te-build-requirements.txt"
 mkdir -p "${toolchain_include}"
 cp -a "${base_cuda_python_root}/include/nvtx3" "${toolchain_include}/"
+cp \
+  "${TE_OVERLAY}/cuda-toolchain/nvidia/cu13/include/cuda_profiler_api.h" \
+  "${toolchain_include}/"
 test -f "${toolchain_include}/nvtx3/nvToolsExt.h"
+test -f "${toolchain_include}/cuda_profiler_api.h"
 export PYTHONPATH="${TE_OVERLAY}/cuda-toolchain"
 nvcc --version
 
