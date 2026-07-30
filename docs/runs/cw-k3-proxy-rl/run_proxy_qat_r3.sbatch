@@ -81,10 +81,18 @@ export RAY_TMPDIR="/tmp/k3-ray-${SLURM_JOB_ID}"
 ray_log_archive="${OUTPUT_ROOT}/ray-logs-${SLURM_JOB_ID}"
 mkdir -p "${RAY_TMPDIR}"
 archive_ray_logs() {
-  if [[ -d "${RAY_TMPDIR}" ]]; then
-    mkdir -p "${ray_log_archive}"
-    cp -a "${RAY_TMPDIR}/." "${ray_log_archive}/"
-  fi
+  local ray_session pattern path
+  ray_session=$(readlink -f "${RAY_TMPDIR}/session_latest" || true)
+  [[ -d "${ray_session}/logs" ]] || return 0
+  mkdir -p "${ray_log_archive}"
+  shopt -s nullglob
+  for pattern in "raylet.*" "gcs_server.*" "runtime_env_agent.*" \
+    "python-core-driver-*.log"; do
+    for path in "${ray_session}/logs"/${pattern}; do
+      cp -a "${path}" "${ray_log_archive}/"
+    done
+  done
+  shopt -u nullglob
 }
 cleanup_ray() {
   env PYTHONPATH="${VLLM_SITE}" MLITE_K3_AUTO_REGISTER=0 \
@@ -126,6 +134,7 @@ bash "${MLITE_ROOT}/experimental/lite/examples/verl/scripts/run_qwen3moe_gsm8k_g
   "++actor_rollout_ref.actor.engine.impl_cfg.moe_router_fusion=false" \
   "++actor_rollout_ref.actor.engine.router_replay_mode=R3" \
   "actor_rollout_ref.rollout.enable_rollout_routing_replay=True" \
+  "trainer.use_v1=False" \
   2>&1 | tee "${log_file}"
 run_rc=${PIPESTATUS[0]}
 set -e

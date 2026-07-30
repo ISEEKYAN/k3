@@ -206,11 +206,14 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "router_replay_mode=R3" in runner
     assert "enable_rollout_routing_replay=True" in runner
     assert "++actor_rollout_ref.actor.engine.impl_cfg.moe_router_fusion=false" in runner
+    assert "trainer.use_v1=False" in runner
     assert "sleep 120" in runner
     assert "sleep 180" in runner
     assert 'RAY_TMPDIR="/tmp/k3-ray-${SLURM_JOB_ID}"' in runner
     assert "archive_ray_logs" in runner
     assert 'ray-logs-${SLURM_JOB_ID}' in runner
+    assert 'cp -a "${RAY_TMPDIR}/."' not in runner
+    assert '"raylet.*" "gcs_server.*" "runtime_env_agent.*"' in runner
     assert 'PYTHONPATH="${VLLM_SITE}"' in runner
     assert "python3 -m ray.scripts.scripts start --head" in runner
     assert "--num-gpus=8" in runner

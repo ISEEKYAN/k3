@@ -29,10 +29,18 @@ export RAY_TMPDIR="/tmp/k3-ray-${SLURM_JOB_ID}"
 ray_log_archive="${OUTPUT_ROOT}/ray-logs-${SLURM_JOB_ID}"
 mkdir -p "${RAY_TMPDIR}"
 archive_ray_logs() {
-  if [[ -d "${RAY_TMPDIR}" ]]; then
-    mkdir -p "${ray_log_archive}"
-    cp -a "${RAY_TMPDIR}/." "${ray_log_archive}/"
-  fi
+  local ray_session pattern path
+  ray_session=$(readlink -f "${RAY_TMPDIR}/session_latest" || true)
+  [[ -d "${ray_session}/logs" ]] || return 0
+  mkdir -p "${ray_log_archive}"
+  shopt -s nullglob
+  for pattern in "raylet.*" "gcs_server.*" "runtime_env_agent.*" \
+    "python-core-driver-*.log"; do
+    for path in "${ray_session}/logs"/${pattern}; do
+      cp -a "${path}" "${ray_log_archive}/"
+    done
+  done
+  shopt -u nullglob
 }
 cleanup_ray() {
   env PYTHONPATH="${VLLM_SITE}" MLITE_K3_AUTO_REGISTER=0 \
