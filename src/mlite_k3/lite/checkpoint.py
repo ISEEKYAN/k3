@@ -279,6 +279,16 @@ class K3WeightSpec:
                     f"got {torch.count_nonzero(padding).item()} nonzero values"
                 )
             tensor = tensor[:heads]
+        elif native_name.endswith(".self_attention.dt_bias"):
+            heads = int(self.config.kda_num_heads)
+            head_dim = int(self.config.kda_head_dim)
+            expected = heads * head_dim
+            if tensor.numel() != expected:
+                raise ValueError(
+                    f"{native_name!r} dt_bias must contain exactly {expected} values, "
+                    f"got shape {tuple(tensor.shape)}"
+                )
+            tensor = tensor.reshape(heads, head_dim)
         if re.search(r"\.[qkv]_conv1d\.weight$", native_name):
             if tensor.ndim != 3 or tensor.size(1) != 1:
                 raise ValueError(

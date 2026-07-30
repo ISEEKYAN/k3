@@ -271,6 +271,7 @@ class _TinyConfig:
     num_experts = 1
     vocab_size = 64
     kda_num_heads = 3
+    kda_head_dim = 4
 
     @staticmethod
     def attention_type(layer_index: int) -> str:
@@ -484,6 +485,33 @@ def test_k3_weight_spec_rejects_nonzero_a_log_padding():
 
     with pytest.raises(ValueError, match="A_log padding must be exactly zero"):
         spec.hf_to_native("layers.0.self_attention.A_log", [padded])
+
+
+def test_k3_weight_spec_reshapes_release_dt_bias():
+    spec = K3WeightSpec(_TinyConfig())
+    flattened = torch.arange(
+        spec.config.kda_num_heads * spec.config.kda_head_dim,
+        dtype=torch.float32,
+    )
+
+    native = spec.hf_to_native(
+        "layers.0.self_attention.dt_bias",
+        [flattened],
+    )
+
+    assert native.shape == (
+        spec.config.kda_num_heads,
+        spec.config.kda_head_dim,
+    )
+    assert torch.equal(native.flatten(), flattened)
+
+
+def test_k3_weight_spec_rejects_wrong_dt_bias_size():
+    spec = K3WeightSpec(_TinyConfig())
+    wrong = torch.zeros(spec.config.kda_num_heads * spec.config.kda_head_dim + 1)
+
+    with pytest.raises(ValueError, match="dt_bias must contain exactly 12 values"):
+        spec.hf_to_native("layers.0.self_attention.dt_bias", [wrong])
 
 
 def test_k3_weight_spec_applies_required_layout_transforms():
