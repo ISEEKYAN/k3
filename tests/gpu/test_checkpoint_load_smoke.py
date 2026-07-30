@@ -89,13 +89,15 @@ def _quantization_config(config: K3Config) -> dict:
 
 
 def _checkpoint_targets(model: torch.nn.Module, spec: K3WeightSpec):
-    state = model.state_dict()
-    yield from model.named_parameters(remove_duplicate=False)
-    yield from (
-        (name, buffer)
-        for name, buffer in model.named_buffers(remove_duplicate=False)
-        if name in state and spec.is_export_buffer(name)
-    )
+    del spec
+    from megatron.lite.primitive.quantization.qat import canonical_state_key
+
+    for state_name, tensor in model.state_dict(keep_vars=True).items():
+        is_qat_auxiliary = (
+            ".parametrizations." in state_name and not state_name.endswith(".original")
+        )
+        if not is_qat_auxiliary:
+            yield canonical_state_key(state_name), tensor
 
 
 @record
@@ -169,6 +171,17 @@ def main() -> None:
     )
     if qat_stats["quantized_modules"] <= 0:
         raise RuntimeError("K3 QAT smoke did not parametrize any module")
+    qat_targets = list(_checkpoint_targets(single, K3WeightSpec(config)))
+    with torch.no_grad():
+        for _, tensor in qat_targets:
+            if tensor.is_floating_point():
+                tensor.fill_(torch.nan)
+    load_checkpoint(single, root, config, ParallelState())
+    if any(
+        tensor.is_floating_point() and not torch.isfinite(tensor).all()
+        for _, tensor in qat_targets
+    ):
+        raise RuntimeError("K3 QAT-enabled import left checkpoint state untouched")
     qat_export = dict(
         export_hf_weights(
             single,
