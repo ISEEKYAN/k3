@@ -116,6 +116,39 @@ def _checkpoint_state(model: torch.nn.Module):
             yield canonical_state_key(state_name), tensor
 
 
+def _assert_exports_bitwise_equal(
+    expected: dict[str, torch.Tensor],
+    actual: dict[str, torch.Tensor],
+    *,
+    context: str,
+) -> None:
+    if expected.keys() != actual.keys():
+        missing = sorted(expected.keys() - actual.keys())
+        unexpected = sorted(actual.keys() - expected.keys())
+        raise RuntimeError(
+            f"{context} changed the HF key set: "
+            f"missing={missing[:1]!r}, unexpected={unexpected[:1]!r}"
+        )
+    for name, expected_tensor in expected.items():
+        actual_tensor = actual[name]
+        if torch.equal(expected_tensor, actual_tensor):
+            continue
+        detail = (
+            f"shape={tuple(expected_tensor.shape)}/{tuple(actual_tensor.shape)}, "
+            f"dtype={expected_tensor.dtype}/{actual_tensor.dtype}"
+        )
+        if (
+            expected_tensor.shape == actual_tensor.shape
+            and expected_tensor.is_floating_point()
+            and actual_tensor.is_floating_point()
+        ):
+            max_diff = (
+                (expected_tensor.float() - actual_tensor.float()).abs().max().item()
+            )
+            detail += f", max_abs_diff={max_diff}"
+        raise RuntimeError(f"{context} differs at {name!r}: {detail}")
+
+
 @record
 def main() -> None:
     dist.init_process_group("nccl")
@@ -202,10 +235,11 @@ def main() -> None:
             cpu=True,
         )
     )
-    if baseline.keys() != qat_export.keys():
-        raise RuntimeError("K3 QAT changed the canonical HF export key set")
-    if any(not torch.equal(baseline[name], qat_export[name]) for name in baseline):
-        raise RuntimeError("K3 QAT export did not preserve BF16 master weights")
+    _assert_exports_bitwise_equal(
+        baseline,
+        qat_export,
+        context="K3 QAT export versus unparametrized export",
+    )
     del qat_export, single
     torch.cuda.empty_cache()
 
@@ -253,10 +287,11 @@ def main() -> None:
             cpu=True,
         )
     )
-    if baseline.keys() != gathered_export.keys():
-        raise RuntimeError("K3 TP/EP/PP export changed the HF key set")
-    if any(not torch.equal(baseline[name], gathered_export[name]) for name in baseline):
-        raise RuntimeError("K3 TP/EP/PP export differs from single-rank export")
+    _assert_exports_bitwise_equal(
+        baseline,
+        gathered_export,
+        context="K3 TP/EP/PP export versus single-rank export",
+    )
 
     local_metrics = torch.tensor(
         [
