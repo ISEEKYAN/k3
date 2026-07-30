@@ -43,7 +43,7 @@ _TESTED_CAPABILITIES = (
 def _config() -> K3Config:
     return K3Config(
         hidden_size=256,
-        num_hidden_layers=2,
+        num_hidden_layers=4,
         num_attention_heads=4,
         num_key_value_heads=4,
         vocab_size=256,
@@ -57,8 +57,8 @@ def _config() -> K3Config:
         kda_head_dim=64,
         kda_num_heads=4,
         kda_short_conv_kernel_size=4,
-        full_attention_layers=(2,),
-        kda_layers=(1,),
+        full_attention_layers=(2, 4),
+        kda_layers=(1, 3),
         attn_res_block_size=2,
         first_k_dense_replace=1,
         moe_intermediate_size=128,
