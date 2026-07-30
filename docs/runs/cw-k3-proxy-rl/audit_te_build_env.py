@@ -53,6 +53,8 @@ def main() -> None:
 
     cuda_include = Path(os.environ["CUDA_HOME"]) / "targets/x86_64-linux/include"
     cudnn_include = Path(sysconfig.get_paths()["purelib"]) / "nvidia/cudnn/include"
+    nvtx_include = Path(sysconfig.get_paths()["purelib"]) / "nvidia/cu13/include"
+    nccl_include = Path(sysconfig.get_paths()["purelib"]) / "nvidia/nccl/include"
     frontend_include = build_deps / "include"
     header_groups = {
         "cuda_headers": (
@@ -75,6 +77,14 @@ def main() -> None:
         "cudnn_frontend_headers": (
             frontend_include,
             ["cudnn_frontend.h", "cudnn_frontend_utils.h"],
+        ),
+        "nvtx_headers": (
+            nvtx_include,
+            ["nvtx3/nvToolsExt.h"],
+        ),
+        "nccl_headers": (
+            nccl_include,
+            ["nccl.h"],
         ),
     }
     checks: dict[str, object] = {
@@ -127,6 +137,8 @@ def main() -> None:
 #include <cudnn.h>
 #include <cudnn_graph.h>
 #include <cudnn_frontend.h>
+#include "nvtx.h"
+#include "util/logging.h"
 __global__ void te_cuda_header_smoke() {}
 """,
         encoding="utf-8",
@@ -138,6 +150,14 @@ __global__ void te_cuda_header_smoke() {}
         str(cudnn_include),
         "-I",
         str(frontend_include),
+        "-I",
+        str(nvtx_include),
+        "-I",
+        str(nccl_include),
+        "-I",
+        str(te_source / "transformer_engine/common"),
+        "-I",
+        str(te_source / "transformer_engine/common/include"),
         "-c",
         str(smoke_source),
         "-o",
