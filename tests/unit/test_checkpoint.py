@@ -270,6 +270,7 @@ class _TinyConfig:
     first_k_dense_replace = 1
     num_experts = 1
     vocab_size = 64
+    kda_num_heads = 3
 
     @staticmethod
     def attention_type(layer_index: int) -> str:
@@ -459,7 +460,33 @@ def test_k3_export_delegates_to_shared_hfweights_primitive(monkeypatch):
     assert kwargs == {"vocab_size": 64}
 
 
-def test_k3_weight_spec_applies_only_the_two_required_layout_transforms():
+def test_k3_weight_spec_removes_release_a_log_zero_padding():
+    spec = K3WeightSpec(_TinyConfig())
+    active = torch.arange(spec.config.kda_num_heads, dtype=torch.float32)
+    padded = torch.cat((active, torch.zeros(5)))
+
+    native = spec.hf_to_native(
+        "layers.0.self_attention.A_log",
+        [padded],
+    )
+
+    assert torch.equal(native, active)
+
+
+def test_k3_weight_spec_rejects_nonzero_a_log_padding():
+    spec = K3WeightSpec(_TinyConfig())
+    padded = torch.cat(
+        (
+            torch.zeros(spec.config.kda_num_heads),
+            torch.tensor([0.0, 1.0]),
+        )
+    )
+
+    with pytest.raises(ValueError, match="A_log padding must be exactly zero"):
+        spec.hf_to_native("layers.0.self_attention.A_log", [padded])
+
+
+def test_k3_weight_spec_applies_required_layout_transforms():
     spec = K3WeightSpec(_TinyConfig())
     gate = torch.randn(3, 4)
     up = torch.randn(3, 4)

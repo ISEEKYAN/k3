@@ -265,6 +265,20 @@ class K3WeightSpec:
         if ".gate_up." in native_name or ".fc1." in native_name:
             return torch.cat(hf_tensors, dim=0).contiguous()
         tensor = hf_tensors[0]
+        if native_name.endswith(".self_attention.A_log"):
+            heads = int(self.config.kda_num_heads)
+            if tensor.ndim != 1 or tensor.numel() < heads:
+                raise ValueError(
+                    f"{native_name!r} must contain at least {heads} KDA heads, "
+                    f"got shape {tuple(tensor.shape)}"
+                )
+            padding = tensor[heads:]
+            if padding.numel() and torch.count_nonzero(padding).item():
+                raise ValueError(
+                    f"{native_name!r} A_log padding must be exactly zero, "
+                    f"got {torch.count_nonzero(padding).item()} nonzero values"
+                )
+            tensor = tensor[:heads]
         if re.search(r"\.[qkv]_conv1d\.weight$", native_name):
             if tensor.ndim != 3 or tensor.size(1) != 1:
                 raise ValueError(
