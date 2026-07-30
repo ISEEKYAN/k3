@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+import torch
 
 from mlite_k3.config import K3Config
 from mlite_k3.lite import protocol
+from mlite_k3.lite.loss_layout import prepare_labels_and_loss_mask
 from mlite_k3.lite.protocol import ImplConfig, build_model
 
 
@@ -119,3 +123,31 @@ def test_disabled_qat_is_inert():
         "parametrizations" in name for name, _ in bundle.chunks[0].named_parameters()
     )
     assert bundle.extras["qat"]["quantized_modules"] == 0
+
+
+def test_dense_bundle_forwards_mask_into_cp_permuted_loss():
+    bundle = build_model(
+        _tiny_config(),
+        impl_cfg=ImplConfig(device="cpu", dtype="float32"),
+    )
+    ps = SimpleNamespace(cp_size=2, cp_rank=1)
+
+    class _MaskedLossChunk:
+        def __call__(self, *, input_ids, labels, loss_mask=None):
+            del input_ids
+            labels_sb, mask_sb = prepare_labels_and_loss_mask(labels, loss_mask, ps)
+            token_loss = labels_sb.float()
+            if mask_sb is None:
+                return {"loss": token_loss.mean()}
+            mask_sb = mask_sb.to(token_loss.dtype)
+            return {"loss": (token_loss * mask_sb).sum() / mask_sb.sum().clamp_min(1)}
+
+    batch = SimpleNamespace(
+        input_ids=torch.arange(8).view(1, 8),
+        labels=torch.arange(8).view(1, 8),
+        loss_mask=torch.tensor([[0, 0, 0, 1, 0, 0, 0, 0]]),
+    )
+
+    output = bundle.forward_step(_MaskedLossChunk(), batch)
+
+    assert output["loss"].item() == 3.0
