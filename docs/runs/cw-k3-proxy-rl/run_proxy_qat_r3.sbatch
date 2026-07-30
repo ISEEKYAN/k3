@@ -43,6 +43,12 @@ srun \
   --container-mounts=/lustre:/lustre \
   --export=ALL \
   /usr/bin/env -u ROCR_VISIBLE_DEVICES \
+    -u PYTHONHOME \
+    -u VIRTUAL_ENV \
+    -u CONDA_PREFIX \
+    -u PYTHONUSERBASE \
+    PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/cuda/bin \
+    PYTHONNOUSERSITE=1 \
   /bin/bash --noprofile --norc -c '
 set -euo pipefail
 source "'"${recipe_dir}"'/k3_training_env.sh"

@@ -38,7 +38,7 @@ def test_active_runtime_recipes_reuse_the_proven_training_base():
 def test_training_environment_preserves_three_pollution_boundaries():
     env = read("k3_training_env.sh")
 
-    assert 'PATH="${CUDA_HOME}/bin:/usr/local/bin:/usr/bin:/bin"' in env
+    assert 'PATH="/usr/local/bin:/usr/bin:/bin:${CUDA_HOME}/bin"' in env
     assert (
         'LD_LIBRARY_PATH="/usr/local/cuda/compat/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"'
         in env
@@ -50,7 +50,7 @@ def test_training_environment_preserves_three_pollution_boundaries():
     assert "TRAINING_VLLM_SITE" not in env
     assert "MLITE_SM90_SITE" not in env
     assert (
-        'export PYTHONPATH="${HYDRA_SITE}:${PYVERS_SITE}:${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
+        'export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
         in env
     )
     assert (
@@ -227,6 +227,12 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
         "python3 -m ray.scripts.scripts start --head"
     )
     assert "/usr/bin/env -u ROCR_VISIBLE_DEVICES" in runner
+    assert "-u PYTHONUSERBASE" in runner
+    assert "-u PYTHONHOME" in runner
+    assert "-u VIRTUAL_ENV" in runner
+    assert "-u CONDA_PREFIX" in runner
+    assert "PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/cuda/bin" in runner
+    assert "PYTHONNOUSERSITE=1" in runner
     assert "export RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=1" in runner
     assert (
         "++ray_kwargs.ray_init.runtime_env.env_vars."
@@ -254,16 +260,16 @@ def test_ray_cuda_environment_gate_checks_a_gpu_actor():
     assert "K3_RAY_CUDA_ENV_OK" in gate
 
 
-def test_tensordict_only_site_is_first_and_package_paths_fail_loud():
+def test_container_python_and_tensordict_site_fail_loud():
     image = read("image.env")
     env = read("k3_training_env.sh")
     validate = read("assert_runtime_package_paths.py")
 
     assert "K3_TENSORDICT_SITE=" in image
-    assert "K3_PYVERS_SITE=" in image
-    assert "K3_HYDRA_SITE=" in image
+    assert "K3_PYVERS_SITE=" not in image
+    assert "K3_HYDRA_SITE=" not in image
     assert (
-        'export PYTHONPATH="${HYDRA_SITE}:${PYVERS_SITE}:${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
+        'export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
         in env
     )
     for package in (
@@ -274,14 +280,14 @@ def test_tensordict_only_site_is_first_and_package_paths_fail_loud():
         "tensordict",
         "ray",
         "pyvers",
-        "hydra",
-        "omegaconf",
-        "antlr4",
     ):
         assert package in validate
     assert '"0.10.0"' in validate
-    assert '"0.2.2"' in validate
-    assert '"1.3.3", "2.3.1", "4.9.3"' in validate
+    assert '"0.1.0"' in validate
+    assert "nv26.05" in validate
+    assert "/usr/local/lib/python3.12/dist-packages" in validate
+    assert 'sys.executable != "/usr/bin/python3"' in validate
+    assert validate.index("import torch") < validate.index("importlib.import_module")
     assert "K3_RUNTIME_PACKAGE_PATHS_OK" in validate
 
 

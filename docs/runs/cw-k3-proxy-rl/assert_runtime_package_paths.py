@@ -7,14 +7,24 @@ import importlib
 import importlib.metadata
 import json
 import os
+import sys
 from pathlib import Path
+
+import torch
 
 
 def assert_runtime_package_paths() -> dict[str, object]:
+    container_site = Path("/usr/local/lib/python3.12/dist-packages")
+    if sys.executable != "/usr/bin/python3":
+        raise RuntimeError(f"host Python leaked into container: {sys.executable}")
+    torch_file = Path(torch.__file__).absolute()
+    if "nv26.05" not in torch.__version__:
+        raise RuntimeError(f"host torch leaked into container: {torch.__version__}")
+    if not torch_file.is_relative_to(container_site):
+        raise RuntimeError(f"torch resolved outside container site: {torch_file}")
+
     vllm_site = Path(os.environ["VLLM_SITE"]).absolute()
     tensordict_site = Path(os.environ["TENSORDICT_SITE"]).absolute()
-    pyvers_site = Path(os.environ["PYVERS_SITE"]).absolute()
-    hydra_site = Path(os.environ["HYDRA_SITE"]).absolute()
     base_site = Path(os.environ["VERL_DEPS_SITE"]).absolute()
     expected_modules = {
         "huggingface_hub": ("huggingface_hub", base_site),
@@ -24,10 +34,7 @@ def assert_runtime_package_paths() -> dict[str, object]:
         "vllm._C": ("vllm._C_stable_libtorch", vllm_site),
         "ray": ("ray", vllm_site),
         "tensordict": ("tensordict", tensordict_site),
-        "pyvers": ("pyvers", pyvers_site),
-        "hydra": ("hydra", hydra_site),
-        "omegaconf": ("omegaconf", hydra_site),
-        "antlr4": ("antlr4", hydra_site),
+        "pyvers": ("pyvers", tensordict_site),
     }
     resolved: dict[str, str] = {}
     for label, (module_name, expected_site) in expected_modules.items():
@@ -43,22 +50,15 @@ def assert_runtime_package_paths() -> dict[str, object]:
     if tensordict_version != "0.10.0":
         raise RuntimeError(f"unexpected tensordict version: {tensordict_version}")
     pyvers_version = importlib.metadata.version("pyvers")
-    if pyvers_version != "0.2.2":
+    if pyvers_version != "0.1.0":
         raise RuntimeError(f"unexpected pyvers version: {pyvers_version}")
-    hydra_version = importlib.metadata.version("hydra-core")
-    omegaconf_version = importlib.metadata.version("omegaconf")
-    antlr_version = importlib.metadata.version("antlr4-python3-runtime")
-    expected_bootstrap_versions = ("1.3.3", "2.3.1", "4.9.3")
-    if (hydra_version, omegaconf_version, antlr_version) != expected_bootstrap_versions:
-        raise RuntimeError(
-            "unexpected Hydra bootstrap versions: "
-            f"{hydra_version}, {omegaconf_version}, {antlr_version}"
-        )
     return {
-        "hydra_bootstrap_versions": expected_bootstrap_versions,
         "packages": resolved,
         "pyvers_version": pyvers_version,
         "tensordict_version": tensordict_version,
+        "python_executable": sys.executable,
+        "torch_file": str(torch_file),
+        "torch_version": torch.__version__,
     }
 
 
