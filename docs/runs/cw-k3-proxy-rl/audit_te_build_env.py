@@ -71,6 +71,9 @@ def main() -> None:
     profiler_header = profiler_source_include / "cuda_profiler_api.h"
     if profiler_header.is_file():
         shutil.copy2(profiler_header, frontend_include / profiler_header.name)
+    nvml_headers = list(build_deps.rglob("nvml.h"))
+    if len(nvml_headers) == 1:
+        shutil.copy2(nvml_headers[0], frontend_include / "nvml.h")
     header_groups = {
         "cuda_headers": (
             cuda_include,
@@ -132,13 +135,18 @@ def main() -> None:
         "nvcc": command("nvcc", "--version"),
         "nvidia-cudnn-frontend": distribution("nvidia-cudnn-frontend"),
         "nvidia-cuda-profiler-api": distribution("nvidia-cuda-profiler-api"),
+        "nvidia-nvml-dev": distribution("nvidia-nvml-dev"),
         "nvtx_source": {
             "ok": nvtx_source_dir.is_dir(),
             "value": str(nvtx_source_dir),
         },
+        "nvml_source": {
+            "ok": len(nvml_headers) == 1,
+            "value": [str(path) for path in nvml_headers],
+        },
     }
     source_include_pattern = re.compile(
-        r"^\s*#\s*include\s*<((?:cuda|cublas|cudnn|nvrtc|nvtx3|nccl)[^>]+)>"
+        r"^\s*#\s*include\s*<((?:cuda|cublas|cudnn|nvrtc|nvtx3|nccl|nvml)[^>]+)>"
     )
     source_suffixes = {".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp"}
     required_cuda_headers: set[str] = set()
@@ -194,6 +202,7 @@ def main() -> None:
 #include <cublas_v2.h>
 #include <cublasLt.h>
 #include <nvrtc.h>
+#include <nvml.h>
 #include <cudnn.h>
 #include <cudnn_graph.h>
 #include <cudnn_frontend.h>

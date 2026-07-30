@@ -101,6 +101,7 @@ def test_te_audit_uses_node_local_dependencies_and_reports_missing_git():
     assert "nvidia-cuda-nvcc" not in requirements
     assert "nvidia-cudnn-frontend==1.26.0" in requirements
     assert "nvidia-cuda-profiler-api==13.0.85" in requirements
+    assert "nvidia-nvml-dev==13.0.87" in requirements
     assert "CUDA_HOME=/usr/local/cuda-13.0" in build
     assert "nvidia/cudnn" in build
     assert "nvidia/nccl" in build
@@ -109,6 +110,7 @@ def test_te_audit_uses_node_local_dependencies_and_reports_missing_git():
     assert '#include "nvtx.h"' in audit
     assert '#include "util/logging.h"' in audit
     assert "#include <cuda_profiler_api.h>" in audit
+    assert "#include <nvml.h>" in audit
     assert '"te_source_cuda_headers"' in audit
     assert "PIP_CACHE_DIR" in build
     assert "TMPDIR" in build

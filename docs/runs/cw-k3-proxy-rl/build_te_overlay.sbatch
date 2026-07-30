@@ -88,8 +88,18 @@ cp -a "${base_cuda_python_root}/include/nvtx3" "${toolchain_include}/"
 cp \
   "${TE_OVERLAY}/cuda-toolchain/nvidia/cu13/include/cuda_profiler_api.h" \
   "${toolchain_include}/"
+mapfile -t nvml_headers < <(
+  find "${TE_OVERLAY}/cuda-toolchain" -type f -name nvml.h -print
+)
+if [[ "${#nvml_headers[@]}" -ne 1 ]]; then
+  echo "FATAL expected exactly one nvml.h, found ${#nvml_headers[@]}" >&2
+  printf "%s\n" "${nvml_headers[@]}" >&2
+  exit 2
+fi
+cp "${nvml_headers[0]}" "${toolchain_include}/"
 test -f "${toolchain_include}/nvtx3/nvToolsExt.h"
 test -f "${toolchain_include}/cuda_profiler_api.h"
+test -f "${toolchain_include}/nvml.h"
 export PYTHONPATH="${TE_OVERLAY}/cuda-toolchain"
 nvcc --version
 
