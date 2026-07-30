@@ -28,6 +28,14 @@ _COPY_METADATA = (
     "tokenizer.json",
     "tokenizer_config.json",
 )
+_COPY_REMOTE_CODE = (
+    "tokenization_kimi.py",
+    "tiktoken.model",
+    "encoding_k3.py",
+    "media_utils.py",
+    "kimi_k3_processor.py",
+    "kimi_k3_vision_processing.py",
+)
 
 
 def auto_map_code_files(*documents: dict) -> set[Path]:
@@ -113,6 +121,11 @@ def build_proxy(source: Path, output: Path, *, layers: int, experts: int) -> Non
         path = source / name
         if path.is_file():
             shutil.copy2(path, output / name)
+    for name in _COPY_REMOTE_CODE:
+        source_path = source / name
+        if not source_path.is_file():
+            raise RuntimeError(f"required K3 remote-code file is missing: {source_path}")
+        shutil.copy2(source_path, output / name)
     metadata_documents = [source_config]
     for name in _COPY_METADATA:
         if not name.endswith(".json"):

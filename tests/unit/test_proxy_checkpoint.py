@@ -140,7 +140,16 @@ def test_build_proxy_rewrites_index_and_drops_out_of_scope_tensors(tmp_path):
             }
         )
     )
-    (source / "tokenization_kimi.py").write_text("class TikTokenTokenizer: pass\n")
+    remote_code = {
+        "tokenization_kimi.py": "class TikTokenTokenizer: pass\n",
+        "tiktoken.model": "fake tokenizer vocabulary\n",
+        "encoding_k3.py": "ENCODING = 'k3'\n",
+        "media_utils.py": "MEDIA = True\n",
+        "kimi_k3_processor.py": "PROCESSOR = True\n",
+        "kimi_k3_vision_processing.py": "VISION = True\n",
+    }
+    for name, contents in remote_code.items():
+        (source / name).write_text(contents)
     names = {
         "language_model.model.embed_tokens.weight": torch.ones(2, 2),
         "language_model.model.layers.1.block_sparse_moe.gate.weight": torch.ones(
@@ -184,6 +193,6 @@ def test_build_proxy_rewrites_index_and_drops_out_of_scope_tensors(tmp_path):
     assert output_tensors[
         "language_model.model.layers.1.block_sparse_moe.gate.e_score_correction_bias"
     ].shape == (56,)
-    assert (output / "tokenization_kimi.py").read_text() == (
-        "class TikTokenTokenizer: pass\n"
-    )
+    assert {
+        name: (output / name).read_text() for name in remote_code
+    } == remote_code
