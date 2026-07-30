@@ -16,6 +16,9 @@ from safetensors.torch import save_file
 
 _LAYER = re.compile(r"^language_model\.model\.layers\.(\d+)\.")
 _EXPERT = re.compile(r"\.block_sparse_moe\.experts\.(\d+)\.")
+_ROUTER_EXPERT_AXIS = re.compile(
+    r"\.block_sparse_moe\.gate\.(?:weight|e_score_correction_bias)$"
+)
 _COPY_METADATA = (
     "chat_template.jinja",
     "generation_config.json",
@@ -50,6 +53,19 @@ def proxy_config(source: dict, *, layers: int, experts: int) -> dict:
     return result
 
 
+def slice_proxy_weight(name: str, tensor, *, experts: int):
+    if _ROUTER_EXPERT_AXIS.search(name) is None:
+        return tensor
+    if tensor.ndim < 1 or tensor.shape[0] < experts:
+        raise ValueError(
+            f"router expert axis for {name!r} is {tuple(tensor.shape)}, "
+            f"cannot keep {experts} experts"
+        )
+    if tensor.shape[0] == experts:
+        return tensor
+    return tensor.narrow(0, 0, experts).contiguous()
+
+
 def build_proxy(source: Path, output: Path, *, layers: int, experts: int) -> None:
     if output.exists() and any(output.iterdir()):
         raise RuntimeError(f"output directory must be empty: {output}")
@@ -82,6 +98,7 @@ def build_proxy(source: Path, output: Path, *, layers: int, experts: int) -> Non
         with safe_open(source / source_shard, framework="pt", device="cpu") as handle:
             for name in sorted(shards[source_shard]):
                 tensor = handle.get_tensor(name)
+                tensor = slice_proxy_weight(name, tensor, experts=experts)
                 tensors[name] = tensor
                 total_size += tensor.numel() * tensor.element_size()
         output_name = f"model-{output_index:05d}-of-{total_shards:05d}.safetensors"

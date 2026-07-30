@@ -5,7 +5,12 @@ import json
 import torch
 from safetensors.torch import load_file, save_file
 
-from tools.build_proxy_checkpoint import build_proxy, keep_weight, proxy_config
+from tools.build_proxy_checkpoint import (
+    build_proxy,
+    keep_weight,
+    proxy_config,
+    slice_proxy_weight,
+)
 
 
 def test_proxy_keeps_twelve_layers_and_one_sixteenth_of_experts():
@@ -75,6 +80,38 @@ def test_proxy_config_preserves_hybrid_schedule_boundary():
     assert source["text_config"]["num_hidden_layers"] == 93
 
 
+def test_proxy_slices_router_expert_axes_to_match_config():
+    router = torch.arange(8 * 3).reshape(8, 3)
+    correction = torch.arange(8)
+
+    assert torch.equal(
+        slice_proxy_weight(
+            "language_model.model.layers.1.block_sparse_moe.gate.weight",
+            router,
+            experts=2,
+        ),
+        router[:2],
+    )
+    assert torch.equal(
+        slice_proxy_weight(
+            "language_model.model.layers.1.block_sparse_moe.gate."
+            "e_score_correction_bias",
+            correction,
+            experts=2,
+        ),
+        correction[:2],
+    )
+    untouched = torch.arange(8)
+    assert (
+        slice_proxy_weight(
+            "language_model.model.layers.1.self_attn.dt_bias",
+            untouched,
+            experts=2,
+        )
+        is untouched
+    )
+
+
 def test_build_proxy_rewrites_index_and_drops_out_of_scope_tensors(tmp_path):
     source = tmp_path / "source"
     output = tmp_path / "output"
@@ -93,6 +130,12 @@ def test_build_proxy_rewrites_index_and_drops_out_of_scope_tensors(tmp_path):
     (source / "config.json").write_text(json.dumps(config))
     names = {
         "language_model.model.embed_tokens.weight": torch.ones(2, 2),
+        "language_model.model.layers.1.block_sparse_moe.gate.weight": torch.ones(
+            896, 2
+        ),
+        "language_model.model.layers.1.block_sparse_moe.gate.e_score_correction_bias": (
+            torch.ones(896)
+        ),
         "language_model.model.layers.11.block_sparse_moe.experts.55.w1.weight": (
             torch.full((2, 2), 55)
         ),
@@ -115,7 +158,16 @@ def test_build_proxy_rewrites_index_and_drops_out_of_scope_tensors(tmp_path):
     assert result_index["metadata"]["proxy"] == {"layers": 12, "experts": 56}
     assert set(result_index["weight_map"]) == {
         "language_model.model.embed_tokens.weight",
+        "language_model.model.layers.1.block_sparse_moe.gate.weight",
+        "language_model.model.layers.1.block_sparse_moe.gate.e_score_correction_bias",
         "language_model.model.layers.11.block_sparse_moe.experts.55.w1.weight",
     }
     output_shard = next(output.glob("*.safetensors"))
-    assert set(load_file(output_shard)) == set(result_index["weight_map"])
+    output_tensors = load_file(output_shard)
+    assert set(output_tensors) == set(result_index["weight_map"])
+    assert output_tensors[
+        "language_model.model.layers.1.block_sparse_moe.gate.weight"
+    ].shape == (56, 2)
+    assert output_tensors[
+        "language_model.model.layers.1.block_sparse_moe.gate.e_score_correction_bias"
+    ].shape == (56,)
