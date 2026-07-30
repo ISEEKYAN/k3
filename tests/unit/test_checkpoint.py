@@ -513,18 +513,19 @@ def test_k3_weight_spec_roundtrips_dequantized_expert_layout():
 
 
 class _TinyGroupedLinear(nn.Module):
-    def __init__(self):
+    def __init__(self, shape):
         super().__init__()
         self.register_parameter(
             "weight0",
-            nn.Parameter(torch.randn(6, 32, dtype=torch.bfloat16)),
+            nn.Parameter(torch.randn(*shape, dtype=torch.bfloat16)),
         )
 
 
 class _TinyExperts(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc1 = _TinyGroupedLinear()
+        self.fc1 = _TinyGroupedLinear((6, 32))
+        self.fc2 = _TinyGroupedLinear((32, 32))
 
 
 class _TinyRouter(nn.Module):
@@ -591,8 +592,10 @@ def test_save_hf_weights_writes_shards_and_roundtrips_real_files(
         "expert_bias", torch.tensor([0.25], dtype=torch.float32)
     )
     spec = K3WeightSpec(_ExpertConfig())
-    native = source.layers[0].moe.experts.fc1.weight0.detach().cpu()
-    exported = spec.native_to_hf("layers.0.moe.experts.fc1.weight0", native)
+    fc1 = source.layers[0].moe.experts.fc1.weight0.detach().cpu()
+    fc2 = source.layers[0].moe.experts.fc2.weight0.detach().cpu()
+    exported = spec.native_to_hf("layers.0.moe.experts.fc1.weight0", fc1)
+    exported.extend(spec.native_to_hf("layers.0.moe.experts.fc2.weight0", fc2))
     exported.append(
         (
             "language_model.model.layers.0.block_sparse_moe.gate."
@@ -653,3 +656,26 @@ def test_save_hf_weights_writes_shards_and_roundtrips_real_files(
         ),
         source.layers[0].moe.router.expert_bias.to(torch.bfloat16),
     )
+
+
+def test_mxfp4_save_rejects_incomplete_routed_grid_before_publishing_index(
+    tmp_path, monkeypatch
+):
+    prefix = "language_model.model.layers.0.block_sparse_moe.experts.0"
+
+    def incomplete_export(*_args, **_kwargs):
+        yield f"{prefix}.w1.weight_packed", torch.zeros(1, 16, dtype=torch.int8)
+        yield f"{prefix}.w1.weight_scale", torch.zeros(1, 1, dtype=torch.uint8)
+
+    monkeypatch.setattr(checkpoint, "export_hf_weights", incomplete_export)
+
+    with pytest.raises(ValueError, match="missing expected routed weight"):
+        save_hf_weights(
+            _TinyExpertModel(),
+            tmp_path,
+            _ExpertConfig(),
+            _single_rank_parallel_state(),
+            target="mxfp4",
+        )
+
+    assert not (tmp_path / "model.safetensors.index.json").exists()

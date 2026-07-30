@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -47,66 +48,51 @@ _STRUCTURES = (
 )
 
 
-def _cell(status: str, evidence: str) -> dict[str, str]:
-    return {"status": status, "evidence": evidence}
+def _normalize_capability_evidence(
+    evidence: Mapping[str, Sequence[str]] | None,
+) -> dict[str, tuple[str, ...]]:
+    normalized = {
+        str(key): tuple(str(source) for source in sources)
+        for key, sources in (evidence or {}).items()
+    }
+    valid_keys = {
+        f"{structure}.{capability}"
+        for structure in _STRUCTURES
+        for capability in _CAPABILITIES
+    }
+    unknown = sorted(set(normalized) - valid_keys)
+    missing_sources = sorted(key for key, sources in normalized.items() if not sources)
+    invalid_sources = sorted(
+        f"{key}:{source}"
+        for key, sources in normalized.items()
+        for source in sources
+        if not source.startswith(("test:", "job:"))
+    )
+    if unknown or missing_sources or invalid_sources:
+        raise RuntimeError(
+            "invalid K3 capability evidence: "
+            f"unknown_cells={unknown}, missing_sources={missing_sources}, "
+            f"invalid_sources={invalid_sources}"
+        )
+    return normalized
 
 
-def build_capability_matrix() -> dict[str, Any]:
-    """Return the explicit structure-by-checkpoint-capability contract."""
+def build_capability_matrix(
+    evidence: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, Any]:
+    """Derive coverage cells exclusively from traceable execution evidence."""
+    normalized = _normalize_capability_evidence(evidence)
     rows = []
     for structure in _STRUCTURES:
-        cells = {
-            "load": _cell(
-                "covered",
-                "K3WeightSpec.hf_to_native visits every mapped public tensor",
-            ),
-            "save": _cell(
-                "covered",
-                "save_hf_weights streams the mapped public names",
-            ),
-            "export_bf16": _cell(
-                "covered",
-                "shared export_hf_weights target=bf16",
-            ),
-            "export_mxfp4": _cell(
-                "covered",
-                (
-                    "routed w1/w2/w3 use packed+scale pairs"
-                    if structure == "moe"
-                    else "non-routed tensors remain plain under target=mxfp4"
-                ),
-            ),
-            "qat_canonical": _cell(
-                ("covered" if structure == "moe" else "excluded_by_contract"),
-                (
-                    "only routed expert linears are parametrized"
-                    if structure == "moe"
-                    else "K3 QAT ignore contract preserves this structure"
-                ),
-            ),
-            "shard_rules": _cell(
-                "covered",
-                (
-                    "each packed/scale pair is co-located"
-                    if structure == "moe"
-                    else "plain tensors are indexed exactly once"
-                ),
-            ),
-        }
+        cells = {}
+        for capability in _CAPABILITIES:
+            sources = normalized.get(f"{structure}.{capability}", ())
+            cells[capability] = {
+                "status": "covered" if sources else "not-covered",
+                "evidence": list(sources),
+            }
         rows.append({"structure": structure, "cells": cells})
 
-    rows.append(
-        {
-            "structure": "mtp",
-            "cells": {
-                capability: _cell(
-                    "out_of_scope",
-                    "MTP is explicitly outside this checkpoint-validation task",
-                )
-                for capability in _CAPABILITIES
-            },
-        }
-    )
     return {"columns": list(_CAPABILITIES), "rows": rows}
 
 
@@ -216,31 +202,6 @@ def _write_json_atomically(path: Path, value: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def write_validation_report(
-    reader: Any,
-    spec: K3WeightSpec,
-    config: Any,
-    output: str | Path,
-    *,
-    revision: str,
-    checkpoint_metadata: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Publish JSON only after every tensor and coverage invariant succeeds."""
-    checkpoint = validate_reader_roundtrip(reader, spec)
-    checkpoint["revision"] = revision
-    if checkpoint_metadata:
-        checkpoint.update(checkpoint_metadata)
-    report = {
-        "checkpoint": checkpoint,
-        "coverage": {
-            "samples": build_structural_samples(config),
-            "matrix": build_capability_matrix(),
-        },
-    }
-    _write_json_atomically(Path(output), report)
-    return report
-
-
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -249,7 +210,12 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_checkpoint(path: str | Path, output: str | Path) -> dict[str, Any]:
+def validate_checkpoint(
+    path: str | Path,
+    output: str | Path,
+    *,
+    capability_evidence: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, Any]:
     """Validate the pinned complete release without retaining multiple shards."""
     root = Path(path)
     config_path = root / "config.json"
@@ -276,13 +242,10 @@ def validate_checkpoint(path: str | Path, output: str | Path) -> dict[str, Any]:
     reader = SafeTensorReader(str(root))
     spec = K3WeightSpec(config)
     mapped_sources = audit_k3_weight_spec_sources(spec, reader.index)
-    return write_validation_report(
-        reader,
-        spec,
-        config,
-        output,
-        revision=KIMI_K3_REVISION,
-        checkpoint_metadata={
+    checkpoint = validate_reader_roundtrip(reader, spec)
+    checkpoint.update(
+        {
+            "revision": KIMI_K3_REVISION,
             "config_sha256": config_sha256,
             "index_sha256": index_sha256,
             "mapped_sources": mapped_sources,
@@ -290,8 +253,17 @@ def validate_checkpoint(path: str | Path, output: str | Path) -> dict[str, Any]:
             "quantized_weights": manifest.weights.quantized_weights,
             "plain_tensors": manifest.weights.plain_tensors,
             "shards": manifest.weights.shards,
-        },
+        }
     )
+    report = {
+        "checkpoint": checkpoint,
+        "coverage": {
+            "samples": build_structural_samples(config),
+            "matrix": build_capability_matrix(capability_evidence),
+        },
+    }
+    _write_json_atomically(Path(output), report)
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -300,8 +272,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("checkpoint", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--evidence-manifest",
+        type=Path,
+        help="JSON mapping of structure.capability to test:/job: execution IDs",
+    )
     args = parser.parse_args(argv)
-    validate_checkpoint(args.checkpoint, args.output)
+    evidence = None
+    if args.evidence_manifest is not None:
+        with args.evidence_manifest.open(encoding="utf-8") as stream:
+            evidence = json.load(stream)
+        if not isinstance(evidence, Mapping):
+            parser.error("--evidence-manifest must contain a JSON object")
+    validate_checkpoint(
+        args.checkpoint,
+        args.output,
+        capability_evidence=evidence,
+    )
     return 0
 
 

@@ -137,6 +137,48 @@ def test_unproven_ep_axis_is_not_reported_as_validated():
     assert evidence == {}
 
 
+def test_parallel_axis_evidence_is_explicit_and_traceable():
+    dimensions = {"tp": 1, "ep": 2, "etp": 1, "pp": 1, "cp": 1}
+
+    axes, evidence = protocol._resolve_validated_axes(
+        dimensions,
+        use_thd=False,
+        validation_evidence={"ep": ("job:12345",)},
+    )
+
+    assert axes == ("ep",)
+    assert evidence == {"ep": ("job:12345",)}
+
+
+def test_build_model_passes_execution_evidence_to_axis_resolver(monkeypatch):
+    supplied = {"tp": ("test:tests/gpu/test_tp_parity.py::test_tp2",)}
+    seen = []
+
+    def resolve(dimensions, *, use_thd, validation_evidence=None):
+        seen.append((dimensions, use_thd, validation_evidence))
+        return (), {}
+
+    monkeypatch.setattr(protocol, "_resolve_validated_axes", resolve)
+
+    bundle = build_model(
+        _tiny_config(),
+        impl_cfg=ImplConfig(
+            device="cpu",
+            dtype="float32",
+            validation_evidence=supplied,
+        ),
+    )
+
+    assert seen == [
+        (
+            {"tp": 1, "ep": 1, "etp": 1, "pp": 1, "cp": 1},
+            False,
+            supplied,
+        )
+    ]
+    assert bundle.extras["validated_axes"] == ()
+
+
 def test_validation_stage_evidence_cannot_drift_from_runtime_contract():
     from pathlib import Path
 
