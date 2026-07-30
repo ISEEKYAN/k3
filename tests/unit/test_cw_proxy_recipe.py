@@ -23,7 +23,11 @@ def test_image_contract_reuses_the_proven_k3_vllm_overlay():
 
 
 def test_active_runtime_recipes_reuse_the_proven_training_base():
-    for name in ("run_proxy_qat_r3.sbatch", "run_proxy_stage.sbatch"):
+    for name in (
+        "run_proxy_generate.sbatch",
+        "run_proxy_qat_r3.sbatch",
+        "run_proxy_stage.sbatch",
+    ):
         assert '--container-image="${K3_TRAINING_IMAGE}"' in read(name)
     assert '--container-image="${K3_TRAINING_IMAGE}"' in read("run_proxy_stage.sbatch")
     assert '--container-image="${K3_TRAINING_IMAGE}"' in read(
@@ -247,6 +251,29 @@ def test_proxy_stage_emits_fail_local_phase_markers():
         "backward_done",
     ):
         assert f'"{phase}"' in runner
+
+
+def test_proxy_generate_reuses_external_launcher_at_tp8_ep8():
+    carrier = read("run_proxy_generate.sbatch")
+    driver = read("run_proxy_generate.py")
+
+    assert "#SBATCH --partition=interactive" in carrier
+    assert "#SBATCH --nodes=1" in carrier
+    assert "#SBATCH --ntasks-per-node=8" in carrier
+    assert "#SBATCH --gpus-per-node=8" in carrier
+    assert "#SBATCH --account=coreai_devtech_all" in carrier
+    assert "srun \\\n  --account=coreai_devtech_all" in carrier
+    assert "--container-image=\"${K3_TRAINING_IMAGE}\"" in carrier
+    assert "OMP_NUM_THREADS=1" in carrier
+    assert "K3_VLLM_SITE" in carrier
+    assert "K3_GENERATE_WANDB_URL" in driver
+    assert 'assert int(os.environ["WORLD_SIZE"]) == 8' in driver
+    assert "tensor_parallel_size=8" in driver
+    assert "enable_expert_parallel=True" in driver
+    assert 'distributed_executor_backend="external_launcher"' in driver
+    assert "skip_tokenizer_init=True" in driver
+    assert "TokensPrompt" in driver
+    assert "K3_PROXY_GENERATE_OK" in driver
 
 
 def test_kda_backward_probe_is_one_gpu_and_uses_production_shape():
