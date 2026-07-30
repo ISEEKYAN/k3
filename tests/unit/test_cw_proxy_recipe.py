@@ -17,6 +17,7 @@ def test_image_contract_reuses_the_proven_k3_vllm_overlay():
     assert "K3_VLLM_OVERLAY=" in image
     assert "k3-vllm-main-prs-overlay" in image
     assert 'K3_VLLM_SITE="${K3_VLLM_OVERLAY}/lib/python3.12/site-packages"' in image
+    assert "qwen35-cp-overlay-20260613/site" in image
     assert "MLITE_SOURCE_SHA=85eacfbc1" in image
 
 
@@ -43,7 +44,11 @@ def test_training_environment_preserves_three_pollution_boundaries():
     assert "VLLM_SITE:=${K3_VLLM_SITE}" in env
     assert "TRAINING_VLLM_SITE" not in env
     assert "MLITE_SM90_SITE" not in env
-    assert "${VLLM_SITE}:${FLA_SITE}:${VERL_DEPS_SITE}" in env
+    assert 'export PYTHONPATH="${VLLM_SITE}:${FLA_SITE}:' in env
+    assert (
+        '${VERL_DEPS_SITE}:${MLITE_ROOT}/experimental/lite/examples/verl:'
+        '${MLITE_ROOT}/experimental/lite"'
+    ) in env
     assert "CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH" in env
     assert "CC CXX CFLAGS CPPFLAGS CXXFLAGS LDFLAGS" in env
 

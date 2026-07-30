@@ -45,7 +45,7 @@ export CUDA_HOME=/usr/local/cuda
 export PATH="${CUDA_HOME}/bin:/usr/local/bin:/usr/bin:/bin"
 export LD_LIBRARY_PATH="/usr/local/cuda/compat/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export MLITE_K3_AUTO_REGISTER=1
-export PYTHONPATH="${recipe_dir}:${K3_ROOT}/src:${MLITE_ROOT}/experimental/lite:${MLITE_ROOT}/experimental/lite/examples/verl:${MEGATRON_ROOT}:${VERL_ROOT}:${VLLM_SITE}:${FLA_SITE}:${VERL_DEPS_SITE}"
+export PYTHONPATH="${VLLM_SITE}:${FLA_SITE}:${recipe_dir}:${K3_ROOT}/src:${MEGATRON_ROOT}:${VERL_ROOT}:${VERL_DEPS_SITE}:${MLITE_ROOT}/experimental/lite/examples/verl:${MLITE_ROOT}/experimental/lite"
 
 python_bin=$(command -v python3)
 python_version=$("${python_bin}" -c 'import platform; print(platform.python_version())')
