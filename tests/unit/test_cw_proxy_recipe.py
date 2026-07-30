@@ -49,9 +49,11 @@ def test_training_environment_preserves_three_pollution_boundaries():
         'LD_LIBRARY_PATH="/usr/local/cuda/compat/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"'
         in env
     )
-    assert 'CC="${CC:-/usr/bin/gcc}"' in env
+    assert "CC=/usr/bin/gcc" in env
     assert "PYTHONNOUSERSITE=1" in env
     assert "OMP_NUM_THREADS=1" in env
+    assert "CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH" in env
+    assert "CC CXX CFLAGS CPPFLAGS CXXFLAGS LDFLAGS" in env
 
 
 def test_jit_cache_is_persistent_keyed_and_fail_loud():
@@ -81,6 +83,8 @@ def test_overlay_validation_is_inside_srun():
     assert "validate_training_overlay.py" in sbatch
     assert "transformer_engine.pytorch" in validation
     assert "import fla" in validation
+    assert 'fla_utils.device_platform == "cuda"' in validation
+    assert "fla_utils.IS_NVIDIA" in validation
     assert "import megatron.lite" in validation
     assert "import mlite_k3" in validation
     assert "import verl" in validation

@@ -4,6 +4,7 @@ import importlib.metadata
 import json
 
 import fla
+import fla.utils as fla_utils
 import megatron.core
 import megatron.lite
 import mlite_k3
@@ -23,12 +24,16 @@ verl_mlite_engine = importlib.import_module("verl_mlite.engine.mlite_engine")
 
 assert get_model_package("k3").__name__ == "mlite_k3"
 assert resolve_runtime_model_name("k3", "lite") == "k3"
+if torch.cuda.is_available():
+    assert fla_utils.device_platform == "cuda", fla_utils.device_platform
+    assert fla_utils.IS_NVIDIA
 result = {
     "torch": torch.__version__,
     "vllm": vllm.__version__,
     "transformer_engine": importlib.metadata.version("transformer-engine"),
     "fla": importlib.metadata.version("flash-linear-attention"),
     "fla_file": fla.__file__,
+    "fla_device_platform": fla_utils.device_platform,
     "megatron_core": megatron.core.__file__,
     "megatron_lite": megatron.lite.__file__,
     "mlite_k3": mlite_k3.__file__,

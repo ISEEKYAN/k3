@@ -35,8 +35,12 @@ fi
 
 export PYTHONNOUSERSITE=1
 export OMP_NUM_THREADS=1
-export CC="${CC:-/usr/bin/gcc}"
-export CXX="${CXX:-/usr/bin/g++}"
+unset \
+  CONDA_DEFAULT_ENV CONDA_PREFIX PYTHONHOME VIRTUAL_ENV \
+  CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
+  CC CXX CFLAGS CPPFLAGS CXXFLAGS LDFLAGS
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
 export CUDA_HOME=/usr/local/cuda
 export PATH="${CUDA_HOME}/bin:/usr/local/bin:/usr/bin:/bin"
 export LD_LIBRARY_PATH="/usr/local/cuda/compat/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
