@@ -270,6 +270,9 @@ def test_proxy_generate_reuses_external_launcher_at_tp8_ep8():
     assert "CC=/usr/bin/gcc" in carrier
     assert "CXX=/usr/bin/g++" in carrier
     assert "CPATH=/usr/include/x86_64-linux-gnu" in carrier
+    assert "--export=ALL,PATH=${PATH},CC=${CC},CXX=${CXX},CPATH=${CPATH}," in carrier
+    assert "unset CFLAGS CPPFLAGS CXXFLAGS LDFLAGS" in carrier
+    assert "unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH" in carrier
     assert "LD_PRELOAD" not in carrier
     assert "K3_GENERATE_WANDB_URL" in driver
     assert 'assert int(os.environ["WORLD_SIZE"]) == 8' in driver
