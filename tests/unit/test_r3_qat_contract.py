@@ -139,15 +139,27 @@ def test_unproven_ep_axis_is_not_reported_as_validated():
 
 def test_parallel_axis_evidence_is_explicit_and_traceable():
     dimensions = {"tp": 1, "ep": 2, "etp": 1, "pp": 1, "cp": 1}
+    source = f"job:12345#sha256:{'a' * 64}"
 
     axes, evidence = protocol._resolve_validated_axes(
         dimensions,
         use_thd=False,
-        validation_evidence={"ep": ("job:12345",)},
+        validation_evidence={"ep": (source,)},
     )
 
     assert axes == ("ep",)
-    assert evidence == {"ep": ("job:12345",)}
+    assert evidence == {"ep": (source,)}
+
+
+def test_parallel_axis_rejects_unfingerprinted_source():
+    dimensions = {"tp": 1, "ep": 2, "etp": 1, "pp": 1, "cp": 1}
+
+    with pytest.raises(RuntimeError, match="invalid K3 validation evidence"):
+        protocol._resolve_validated_axes(
+            dimensions,
+            use_thd=False,
+            validation_evidence={"ep": ("job:12345",)},
+        )
 
 
 def test_build_model_passes_execution_evidence_to_axis_resolver(monkeypatch):
