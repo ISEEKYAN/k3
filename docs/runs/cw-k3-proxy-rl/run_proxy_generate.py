@@ -53,12 +53,12 @@ def ensure_flash_attn_mla_compatibility() -> None:
     original = flashattn_mla.flash_attn_varlen_func
 
     def flash_attn_varlen_cp_compatibility(*args, **kwargs):
-        if kwargs.get("cp_world_size") == 0:
+        if kwargs.get("cp_world_size", 1) <= 0:
             kwargs["cp_world_size"] = 1
         return original(*args, **kwargs)
 
     flashattn_mla.flash_attn_varlen_func = flash_attn_varlen_cp_compatibility
-    print("K3_VLLM_FA3_CP_COMPAT zero_to_one=enabled", flush=True)
+    print("K3_VLLM_FA3_CP_COMPAT nonpositive_to_one=enabled", flush=True)
 
 
 def initialize_world() -> None:

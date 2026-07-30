@@ -291,7 +291,7 @@ def test_proxy_generate_reuses_external_launcher_at_tp8():
     assert "ops.moe_sum = moe_sum_legacy_binary_compatibility" in driver
     assert "legacy two-argument _moe_C cannot apply an expert map" in driver
     assert "ensure_flash_attn_mla_compatibility()" in driver
-    assert 'kwargs.get("cp_world_size") == 0' in driver
+    assert 'kwargs.get("cp_world_size", 1) <= 0' in driver
     assert 'kwargs["cp_world_size"] = 1' in driver
     assert "K3_PROXY_GENERATE_OK" in driver
 
