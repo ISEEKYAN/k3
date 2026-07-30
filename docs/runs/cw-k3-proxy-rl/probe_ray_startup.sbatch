@@ -36,12 +36,12 @@ archive_ray_logs() {
 }
 cleanup_ray() {
   env PYTHONPATH="${VLLM_SITE}" MLITE_K3_AUTO_REGISTER=0 \
-    ray stop --force || true
+    python3 -m ray.scripts.scripts stop --force || true
   archive_ray_logs
 }
 trap cleanup_ray EXIT
 env PYTHONPATH="${VLLM_SITE}" MLITE_K3_AUTO_REGISTER=0 \
-  ray start --head \
+  python3 -m ray.scripts.scripts start --head \
     --num-cpus=1 \
     --disable-usage-stats \
     --temp-dir="${RAY_TMPDIR}"

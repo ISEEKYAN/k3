@@ -212,7 +212,7 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "archive_ray_logs" in runner
     assert 'ray-logs-${SLURM_JOB_ID}' in runner
     assert 'PYTHONPATH="${VLLM_SITE}"' in runner
-    assert "ray start --head" in runner
+    assert "python3 -m ray.scripts.scripts start --head" in runner
     assert "--num-gpus=8" in runner
     assert "export RAY_ADDRESS=auto" in runner
 
@@ -227,7 +227,7 @@ def test_ray_startup_probe_is_a_zero_gpu_full_environment_gate():
     assert "k3_training_env.sh" in probe
     assert 'RAY_TMPDIR="/tmp/k3-ray-${SLURM_JOB_ID}"' in probe
     assert 'PYTHONPATH="${VLLM_SITE}"' in probe
-    assert "ray start --head" in probe
+    assert "python3 -m ray.scripts.scripts start --head" in probe
     assert 'ray.init(address="auto")' in probe
     assert "K3_RAY_STARTUP_OK" in probe
     assert 'ray-logs-${SLURM_JOB_ID}' in probe
