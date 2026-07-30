@@ -191,7 +191,11 @@ class K3WeightSpec:
             return torch.cat(hf_tensors, dim=0).contiguous()
         tensor = hf_tensors[0]
         if re.search(r"\.[qkv]_conv1d\.conv\.weight$", native_name):
-            return tensor.unsqueeze(1)
+            if tensor.ndim != 3 or tensor.size(1) != 1:
+                raise ValueError(
+                    f"{native_name!r} must have shape [channels, 1, kernel], "
+                    f"got {tuple(tensor.shape)}"
+                )
         return tensor
 
     def native_to_hf(
@@ -205,9 +209,10 @@ class K3WeightSpec:
         elif re.search(r"\.[qkv]_conv1d\.conv\.weight$", native_name):
             if tensor.ndim != 3 or tensor.size(1) != 1:
                 raise ValueError(
-                    f"{native_name!r} must have shape [channels, 1, kernel]"
+                    f"{native_name!r} must have shape [channels, 1, kernel], "
+                    f"got {tuple(tensor.shape)}"
                 )
-            parts = (tensor.squeeze(1),)
+            parts = (tensor,)
         else:
             parts = (tensor,)
         return list(zip(names, parts, strict=True))

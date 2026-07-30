@@ -43,7 +43,7 @@ def _plain_checkpoint(spec: K3WeightSpec) -> dict[str, torch.Tensor]:
             if source_name.endswith(
                 ("q_conv1d.weight", "k_conv1d.weight", "v_conv1d.weight")
             ):
-                tensor = torch.arange(12, dtype=torch.bfloat16).reshape(4, 3)
+                tensor = torch.arange(12, dtype=torch.bfloat16).reshape(4, 1, 3)
             elif source_name.endswith((".w1.weight", ".w3.weight")):
                 tensor = torch.arange(8, dtype=torch.bfloat16).reshape(2, 4)
             elif source_name.endswith(".w2.weight"):

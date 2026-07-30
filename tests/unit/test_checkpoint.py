@@ -281,18 +281,20 @@ def test_k3_weight_spec_covers_text_backbone_with_k3_specific_expert_names():
     assert not any("vision" in name for names in mapping.values() for name in names)
 
 
-def test_k3_weight_spec_applies_only_the_two_required_layout_transforms():
+def test_k3_weight_spec_fuses_gate_up_and_preserves_public_conv_layout():
     spec = K3WeightSpec(_TinyConfig())
     gate = torch.randn(3, 4)
     up = torch.randn(3, 4)
-    conv = torch.randn(4, 3)
+    conv = torch.randn(4, 1, 3)
 
     fused = spec.hf_to_native("layers.1.moe.experts.0.gate_up.weight", [gate, up])
-    expanded = spec.hf_to_native("layers.0.self_attention.q_conv1d.conv.weight", [conv])
+    preserved = spec.hf_to_native(
+        "layers.0.self_attention.q_conv1d.conv.weight", [conv]
+    )
 
     assert torch.equal(fused, torch.cat((gate, up), dim=0))
-    assert expanded.shape == (4, 1, 3)
-    assert torch.equal(expanded.squeeze(1), conv)
+    assert preserved.shape == (4, 1, 3)
+    assert torch.equal(preserved, conv)
 
 
 def test_k3_weight_spec_source_audit_accepts_plain_and_paired_weights():
