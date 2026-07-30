@@ -83,6 +83,20 @@ def test_overlay_validation_is_inside_srun():
     assert 'import_module("verl_mlite.engine.mlite_engine")' in validation
 
 
+def test_te_binary_probe_is_short_cpu_srun_and_never_builds_source():
+    probe = read("probe_te_binary.sbatch")
+
+    assert "#SBATCH --account=coreai_devtech_all" in probe
+    assert "#SBATCH --partition=cpu_short" in probe
+    assert "#SBATCH --time=00:05:00" in probe
+    assert "srun" in probe
+    assert "--account=coreai_devtech_all" in probe
+    assert "transformer-engine-cu13==2.17.0" in probe
+    assert "transformer-engine-torch==2.17.0" in probe
+    assert "--only-binary=:all:" in probe
+    assert "pip install" not in probe
+
+
 def test_te_audit_uses_node_local_dependencies_and_reports_missing_git():
     sbatch = read("audit_te_build_env.sbatch")
     audit = read("audit_te_build_env.py")
