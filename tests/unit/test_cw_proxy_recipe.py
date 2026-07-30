@@ -33,16 +33,18 @@ def test_image_cache_recipe_saves_once_and_runtime_recipes_reuse_it():
         "build_proxy_checkpoint.sbatch",
         "build_te_overlay.sbatch",
         "run_proxy_qat_r3.sbatch",
-        "run_proxy_stage.sbatch",
-        "validate_training_overlay.sbatch",
     ):
         assert '--container-image="${K3_RUNTIME_IMAGE}"' in read(name)
+    assert '--container-image="${K3_TRAINING_IMAGE}"' in read("run_proxy_stage.sbatch")
+    assert '--container-image="${K3_TRAINING_IMAGE}"' in read(
+        "validate_training_overlay.sbatch"
+    )
 
 
 def test_training_environment_preserves_three_pollution_boundaries():
     env = read("k3_training_env.sh")
 
-    assert 'PATH="/usr/local/cuda/bin:${PATH}"' in env
+    assert 'PATH="${CUDA_HOME}/bin:/usr/local/bin:/usr/bin:/bin"' in env
     assert (
         'LD_LIBRARY_PATH="/usr/local/cuda/compat/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"'
         in env
@@ -56,15 +58,16 @@ def test_jit_cache_is_persistent_keyed_and_fail_loud():
     env = read("k3_training_env.sh")
 
     assert "SLURM_JOB_ID" not in env
-    assert "K3_IMAGE_AMD64_DIGEST" in env
+    assert "K3_TRAINING_IMAGE" in env
+    assert "training_image_stat" in env
     assert "k3_source_sha" in env
     assert "gpu_cc" in env
     assert "TRITON_CACHE_DIR" in env
     assert "TORCHINDUCTOR_CACHE_DIR" in env
     assert "FATAL JIT cache fingerprint mismatch" in env
-    assert "K3_IMAGE_SQSH" in env
-    assert "K3_IMAGE_SQSH}.sha256" in env
     assert "runtime_image_fingerprint" in env
+    assert "TILELANG_CACHE_DIR" in env
+    assert "TILELANG_TMP_DIR" in env
 
 
 def test_overlay_validation_is_inside_srun():
