@@ -17,6 +17,9 @@ from megatron.lite.model.registry import (
     resolve_runtime_model_name,
 )
 
+verl_main_ppo = importlib.import_module("verl.trainer.main_ppo")
+verl_mlite_engine = importlib.import_module("verl_mlite.engine.mlite_engine")
+
 
 assert get_model_package("k3").__name__ == "mlite_k3"
 assert resolve_runtime_model_name("k3", "lite") == "k3"
@@ -30,6 +33,8 @@ result = {
     "megatron_lite": megatron.lite.__file__,
     "mlite_k3": mlite_k3.__file__,
     "verl": verl.__file__,
+    "verl_main_ppo": verl_main_ppo.__file__,
+    "verl_mlite_engine": verl_mlite_engine.__file__,
     "te_rmsnorm": te.RMSNorm.__name__,
     "transformer_engine_file": transformer_engine.__file__,
 }
