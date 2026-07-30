@@ -164,11 +164,13 @@ PYTHONPATH=<Megatron-Lite experimental/lite>:src \
   --output ./k3-checkpoint-validation.json
 ```
 
-The command verifies the frozen config and index SHA-256 values before opening
-weights. It then visits every mapped logical parameter, applies the exact
-public-to-native layout transform and its inverse, and compares shape, dtype,
-and raw bytes. It retains one logical tensor group at a time. The JSON report
-is atomically created only after the complete traversal succeeds.
+The command verifies the frozen config and index SHA-256 values, then visits
+every mapped physical source through safetensors headers only. It checks the
+complete key set, dtype and shape metadata, MXFP4 packed/scale pairing, fused
+source compatibility, and the KDA convolution layout without materializing
+tensor payloads. The JSON report is atomically created only after the metadata
+traversal succeeds. This is a mapping/layout audit, not checkpoint-load or
+numerical-parity evidence.
 
 The report does not infer capability coverage from that traversal. Without an
 execution-evidence manifest, every in-scope capability cell is emitted as
@@ -232,10 +234,10 @@ MTP is outside this package scope and therefore has no matrix row rather than
 a hard-coded coverage conclusion.
 
 Repository unit tests include one on-disk safetensors fixture that exercises
-the production reader and atomic report path. Lower-level transform tests use
-an in-memory reader. Both are regression coverage only: a report from the
-complete 1.56-TB release is required before claiming complete-checkpoint
-equality.
+the production header reader and atomic report path. Lower-level transform
+tests use an in-memory metadata reader. Both are regression coverage only:
+checkpoint-load equality requires the scheduler-backed distributed test and
+cannot be inferred from this metadata report.
 
 ### Stage 4: scheduled GPU paths
 

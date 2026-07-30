@@ -14,7 +14,7 @@ from mlite_k3.checkpoint_validation import (
     build_capability_matrix,
     build_structural_samples,
     validate_checkpoint,
-    validate_reader_roundtrip,
+    validate_reader_metadata,
 )
 from mlite_k3.config import K3Config
 from mlite_k3.lite.checkpoint import K3WeightSpec
@@ -36,6 +36,42 @@ class _Reader:
 
     def get_tensor(self, name: str) -> torch.Tensor:
         return self._tensors[name]
+
+    def tensor_metadata(self, name: str):
+        tensor = self._tensors[name]
+        dtype = {
+            torch.bfloat16: "BF16",
+            torch.float32: "F32",
+            torch.int8: "I8",
+            torch.uint8: "U8",
+        }[tensor.dtype]
+        return tuple(tensor.shape), dtype
+
+
+def test_checkpoint_metadata_validation_never_materializes_tensor_payloads():
+    class MetadataOnlyReader:
+        index = {"weight": "model.safetensors"}
+
+        @staticmethod
+        def tensor_metadata(name):
+            assert name == "weight"
+            return (2, 3), "BF16"
+
+        @staticmethod
+        def get_tensor(name):
+            raise AssertionError(f"payload read is forbidden: {name}")
+
+    class Spec:
+        @staticmethod
+        def weight_map():
+            return {"native.weight": ["weight"]}
+
+    summary = checkpoint_validation.validate_reader_metadata(
+        MetadataOnlyReader(),
+        Spec(),
+    )
+
+    assert summary["metadata_only"] is True
 
 
 class _TinyConfig:
@@ -141,20 +177,20 @@ def test_capability_matrix_rejects_invalid_or_untraceable_evidence(evidence):
         build_capability_matrix(evidence)
 
 
-def test_reader_roundtrip_checks_every_mapped_source_shape_dtype_and_bits():
+def test_reader_metadata_checks_every_mapped_source_shape_and_dtype():
     spec = K3WeightSpec(_TinyConfig())
     tensors = _plain_checkpoint(spec)
 
-    summary = validate_reader_roundtrip(_Reader(tensors), spec)
+    summary = validate_reader_metadata(_Reader(tensors), spec)
 
-    assert summary["bitwise_equal"] is True
+    assert summary["metadata_only"] is True
     assert summary["native_tensors"] == len(spec.weight_map())
     assert summary["source_tensors"] == len(tensors)
     assert len(summary["source_key_sha256"]) == 64
-    assert summary["dtypes"] == {"torch.bfloat16": len(tensors)}
+    assert summary["dtypes"] == {"BF16": len(tensors)}
 
 
-def test_reader_roundtrip_uses_manifest_aware_mxfp4_mapping():
+def test_reader_metadata_uses_manifest_aware_mxfp4_mapping():
     from mlite_k3.lite import checkpoint
 
     plain_spec = K3WeightSpec(_TinyConfig())
@@ -173,11 +209,11 @@ def test_reader_roundtrip_uses_manifest_aware_mxfp4_mapping():
     )
     spec = K3WeightSpec(_TinyConfig(), manifest=manifest)
 
-    summary = validate_reader_roundtrip(_Reader(physical), spec)
+    summary = validate_reader_metadata(_Reader(physical), spec)
 
     assert summary["source_tensors"] == len(physical)
-    assert "torch.int8" in summary["dtypes"]
-    assert "torch.uint8" in summary["dtypes"]
+    assert "I8" in summary["dtypes"]
+    assert "U8" in summary["dtypes"]
 
 
 def test_manifest_validation_catches_physical_layout_plain_spec_misses():
@@ -209,11 +245,11 @@ def test_manifest_validation_catches_physical_layout_plain_spec_misses():
     physical[packed_name] = physical[packed_name].to(torch.float32)
     tensors = logical | physical
 
-    plain_summary = validate_reader_roundtrip(_Reader(tensors), plain_spec)
+    plain_summary = validate_reader_metadata(_Reader(tensors), plain_spec)
 
-    assert plain_summary["bitwise_equal"] is True
-    with pytest.raises(TypeError, match="MXFP4 packed tensor must be uint8/int8"):
-        validate_reader_roundtrip(_Reader(tensors), manifest_spec)
+    assert plain_summary["metadata_only"] is True
+    with pytest.raises(TypeError, match="MXFP4 packed tensor.*must be I8/U8"):
+        validate_reader_metadata(_Reader(tensors), manifest_spec)
 
 
 def _write_real_safetensors_checkpoint(tmp_path, spec, monkeypatch):
@@ -262,25 +298,17 @@ def _write_real_safetensors_checkpoint(tmp_path, spec, monkeypatch):
     )
 
 
-def test_report_is_not_published_when_any_tensor_is_not_bitwise_equal(
-    tmp_path, monkeypatch
-):
-    class _CorruptingSpec(K3WeightSpec):
-        def native_to_hf(self, native_name, tensor):
-            restored = super().native_to_hf(native_name, tensor)
-            if native_name == "embed_tokens.embedding.weight":
-                name, value = restored[0]
-                value = value.clone()
-                value.flatten()[0] = -0.0
-                return [(name, value)]
-            return restored
-
+def test_report_is_not_published_when_header_layout_is_invalid(tmp_path, monkeypatch):
     spec = K3WeightSpec(_TinyConfig())
     _write_real_safetensors_checkpoint(tmp_path, spec, monkeypatch)
-    monkeypatch.setattr(checkpoint_validation, "K3WeightSpec", _CorruptingSpec)
+    shard = tmp_path / "model-00001-of-00001.safetensors"
+    tensors = _plain_checkpoint(spec)
+    conv_name = next(name for name in tensors if name.endswith("q_conv1d.weight"))
+    tensors[conv_name] = torch.zeros((4, 3), dtype=torch.bfloat16)
+    save_file(tensors, str(shard))
     output = tmp_path / "summary.json"
 
-    with pytest.raises(AssertionError, match="bitwise mismatch"):
+    with pytest.raises(ValueError, match=r"shape \[channels, 1, kernel\]"):
         validate_checkpoint(tmp_path, output)
 
     assert not output.exists()
@@ -296,7 +324,7 @@ def test_successful_report_uses_real_safetensors_and_has_no_unevidenced_coverage
     report = validate_checkpoint(tmp_path, output)
 
     assert json.loads(output.read_text()) == report
-    assert report["checkpoint"]["bitwise_equal"] is True
+    assert report["checkpoint"]["metadata_only"] is True
     assert report["coverage"]["samples"]["layer_count"] == 3
     assert all(
         cell["status"] == "not-covered"
