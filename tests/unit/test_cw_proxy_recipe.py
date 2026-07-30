@@ -97,6 +97,19 @@ def test_te_binary_probe_is_short_cpu_srun_and_never_builds_source():
     assert "pip install" not in probe
 
 
+def test_training_base_probe_reuses_proven_pytorch_and_rollout_overlays():
+    probe = read("probe_training_base.sbatch")
+
+    assert "#SBATCH --partition=cpu_short" in probe
+    assert "#SBATCH --time=00:05:00" in probe
+    assert "--account=coreai_devtech_all" in probe
+    assert "pytorch_26.04-py3.sqsh" in probe
+    assert "mlite-2604-verl-dsa-sm90-overlay" in probe
+    assert "mlite-2612-cu13-canonical/vllm0251-site" in probe
+    assert "OMP_NUM_THREADS=1" in probe
+    assert "pip install" not in probe
+
+
 def test_te_audit_uses_node_local_dependencies_and_reports_missing_git():
     sbatch = read("audit_te_build_env.sbatch")
     audit = read("audit_te_build_env.py")
