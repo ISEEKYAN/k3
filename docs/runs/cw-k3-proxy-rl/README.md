@@ -53,3 +53,9 @@ sbatch --export=ALL run_proxy_qat_r3.sbatch
 The GPU job emits diagnostics after two and five minutes and writes the first
 observed W&B URL to `wandb-url.txt`. A skipped test, a dry run, or a process
 that never reaches an optimizer-backed RL step is not a successful run.
+
+Known environment exception: tensordict 0.10.0 declares `pyvers<0.2.0`, while
+the validated overlay contains pyvers 0.2.2. That pyvers distribution still
+reports `__version__ = "0.1.0"` in its module. The runtime closure imports both
+successfully, so the preflight checks pyvers importability and location instead
+of either inconsistent version string.

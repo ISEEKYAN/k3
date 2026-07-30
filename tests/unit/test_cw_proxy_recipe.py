@@ -279,7 +279,6 @@ def test_container_python_and_tensordict_site_fail_loud():
     ):
         assert package in validate
     assert '"0.10.0"' in validate
-    assert '"0.1.0"' in validate
     assert "nv26.05" in validate
     assert "/usr/local/lib/python3.12/dist-packages" in validate
     assert 'sys.executable != "/usr/bin/python3"' in validate
@@ -288,9 +287,13 @@ def test_container_python_and_tensordict_site_fail_loud():
     assert validate.index("K3_CONTAINER_PYTHON_OK") < validate.index(
         "importlib.import_module"
     )
-    assert "pyvers.__version__" in validate
+    assert "pyvers.__version__" not in validate
     assert 'importlib.metadata.version("pyvers")' not in validate
+    assert "pyvers_version" not in validate
     assert "K3_RUNTIME_PACKAGE_PATHS_OK" in validate
+    readme = read("README.md")
+    assert "pyvers 0.2.2" in readme
+    assert "pyvers<0.2.0" in readme
 
 
 def test_ray_startup_probe_is_a_zero_gpu_full_environment_gate():

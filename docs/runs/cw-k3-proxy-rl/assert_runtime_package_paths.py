@@ -58,13 +58,8 @@ def assert_runtime_package_paths() -> dict[str, object]:
     tensordict_version = importlib.metadata.version("tensordict")
     if tensordict_version != "0.10.0":
         raise RuntimeError(f"unexpected tensordict version: {tensordict_version}")
-    pyvers = importlib.import_module("pyvers")
-    pyvers_version = pyvers.__version__
-    if pyvers_version != "0.1.0":
-        raise RuntimeError(f"unexpected pyvers version: {pyvers_version}")
     return {
         "packages": resolved,
-        "pyvers_version": pyvers_version,
         "tensordict_version": tensordict_version,
         **container_python,
     }
