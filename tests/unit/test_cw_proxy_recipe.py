@@ -45,8 +45,10 @@ def test_training_environment_preserves_three_pollution_boundaries():
     assert "TRAINING_VLLM_SITE" not in env
     assert "MLITE_SM90_SITE" not in env
     assert 'export PYTHONPATH="${VLLM_SITE}:${FLA_SITE}:' in env
+    assert "${K3_ROOT}/src:${MEGATRON_ROOT}" not in env
     assert (
-        '${VERL_DEPS_SITE}:${MLITE_ROOT}/experimental/lite/examples/verl:'
+        '${K3_ROOT}/src:${VERL_ROOT}:${VERL_DEPS_SITE}:'
+        '${MLITE_ROOT}/experimental/lite/examples/verl:'
         '${MLITE_ROOT}/experimental/lite"'
     ) in env
     assert "CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH" in env
