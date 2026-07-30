@@ -31,6 +31,16 @@ assert_source_sha() {
 assert_source_sha "${MLITE_ROOT}" "${MLITE_SOURCE_SHA}" MLite
 assert_source_sha "${VERL_ROOT}" "${VERL_SOURCE_SHA}" VERL
 assert_source_sha "${MEGATRON_ROOT}" "${MCORE_SOURCE_SHA}" MCore
+mcore_patch="${recipe_dir}/mcore-fp32-hybrid-leaf.patch"
+if ! git -C "${MEGATRON_ROOT}" apply --reverse --check "${mcore_patch}"; then
+  echo "FATAL K3 MCore FP32 Hybrid leaf patch is not applied" >&2
+  exit 2
+fi
+mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)
+if [[ "${mcore_changed}" != "megatron/core/optimizer/distrib_optimizer.py" ]]; then
+  echo "FATAL unexpected K3 MCore overlay changes: ${mcore_changed}" >&2
+  exit 2
+fi
 k3_source_sha=$(git -C "${K3_ROOT}" rev-parse HEAD)
 if ! git -C "${K3_ROOT}" merge-base --is-ancestor "${K3_BASE_SOURCE_SHA}" "${k3_source_sha}"; then
   echo "FATAL K3 source is not based on ${K3_BASE_SOURCE_SHA}: ${k3_source_sha}" >&2
@@ -68,7 +78,10 @@ fi
 training_image_stat=$(stat -Lc "%s:%Y" "${K3_TRAINING_IMAGE}")
 runtime_image_fingerprint="sqsh-stat:${K3_TRAINING_IMAGE}:${training_image_stat}"
 recipe_fingerprint=$(
-  sha256sum "${recipe_dir}/image.env" "${BASH_SOURCE[0]}" \
+  sha256sum \
+    "${recipe_dir}/image.env" \
+    "${BASH_SOURCE[0]}" \
+    "${recipe_dir}/mcore-fp32-hybrid-leaf.patch" \
     | sha256sum \
     | cut -d' ' -f1
 )

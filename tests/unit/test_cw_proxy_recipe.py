@@ -19,6 +19,7 @@ def test_image_contract_reuses_the_proven_k3_vllm_overlay():
     assert 'K3_VLLM_SITE="${K3_VLLM_OVERLAY}/lib/python3.12/site-packages"' in image
     assert "qwen35-cp-overlay-20260613/site" in image
     assert "nvidia_cutlass_dsl/python_packages" in image
+    assert "mcore-fp32-hybrid-leaf" in image
     assert "MLITE_SOURCE_SHA=85eacfbc1" in image
 
 
@@ -69,6 +70,7 @@ def test_jit_cache_is_persistent_keyed_and_fail_loud():
     assert "K3_TRAINING_IMAGE" in env
     assert "training_image_stat" in env
     assert "recipe_fingerprint" in env
+    assert '"${recipe_dir}/mcore-fp32-hybrid-leaf.patch"' in env
     assert "k3_source_sha" in env
     assert "gpu_cc" in env
     assert "TRITON_CACHE_DIR" in env
@@ -83,6 +85,22 @@ def test_jit_cache_is_persistent_keyed_and_fail_loud():
     assert "TILELANG_TMP_DIR" in env
     assert "gpu_cc_output=" in env
     assert "head -1" not in env
+
+
+def test_k3_mcore_overlay_detaches_fp32_dist_opt_shards():
+    prepare = read("prepare_mcore_overlay.sh")
+    patch = read("mcore-fp32-hybrid-leaf.patch")
+    env = read("k3_training_env.sh")
+
+    assert "git clone --no-hardlinks" in prepare
+    assert 'apply --check "${patch_file}"' in prepare
+    assert 'apply --reverse --check "${patch_file}"' in prepare
+    assert "diff --name-only" in prepare
+    assert "git reset" not in prepare
+    assert "model_param.detach().view(-1)" in patch
+    assert "model_param.view(-1)" in patch
+    assert 'apply --reverse --check "${mcore_patch}"' in env
+    assert 'mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)' in env
 
 
 def test_overlay_validation_is_inside_srun():
