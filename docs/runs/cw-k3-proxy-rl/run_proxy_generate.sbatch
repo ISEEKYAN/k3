@@ -22,7 +22,7 @@ source "${recipe_dir}/image.env"
 unset RAY_ADDRESS
 export PYTHONNOUSERSITE=1
 export OMP_NUM_THREADS=1
-export PATH=/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
+export PATH=/cm/shared/apps/slurm/current/bin:/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 export CPATH=/usr/include/x86_64-linux-gnu
