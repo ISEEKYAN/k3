@@ -209,9 +209,13 @@ def main() -> None:
             parallel=parallel,
             device=f"cuda:{local_rank}",
             dtype="bfloat16",
+            qat=QATSpec(enabled=True, format="mxfp4", ignore_patterns=()),
         ),
     )
     model = bundle.chunks[0]
+    distributed_qat_modules = bundle.extras["qat"]["quantized_modules"]
+    if distributed_qat_modules <= 0:
+        raise RuntimeError("K3 distributed QAT smoke did not parametrize any module")
     spec = K3WeightSpec(config)
     targets = list(_checkpoint_targets(model, spec))
     with torch.no_grad():
@@ -247,7 +251,7 @@ def main() -> None:
             len(model.layer_indices),
             int(model.pre_process),
             int(model.post_process),
-            qat_stats["quantized_modules"],
+            distributed_qat_modules,
         ],
         device=device,
         dtype=torch.long,
@@ -272,6 +276,7 @@ def main() -> None:
                     "all_checkpoint_tensors_finite": True,
                     "expert_bias_dtype": "torch.float32",
                     "qat_key_set_equal": True,
+                    "distributed_qat_import": True,
                     "tp_ep_pp_bitwise_equal": True,
                 },
                 sort_keys=True,
