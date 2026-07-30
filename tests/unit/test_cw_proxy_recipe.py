@@ -207,6 +207,7 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "enable_rollout_routing_replay=True" in runner
     assert "++actor_rollout_ref.actor.engine.impl_cfg.moe_router_fusion=false" in runner
     assert "trainer.use_v1=False" in runner
+    assert "data.trust_remote_code=True" in runner
     assert "sleep 120" in runner
     assert "sleep 180" in runner
     assert 'RAY_TMPDIR="/tmp/k3-ray-${SLURM_JOB_ID}"' in runner

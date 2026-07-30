@@ -135,6 +135,7 @@ bash "${MLITE_ROOT}/experimental/lite/examples/verl/scripts/run_qwen3moe_gsm8k_g
   "++actor_rollout_ref.actor.engine.router_replay_mode=R3" \
   "actor_rollout_ref.rollout.enable_rollout_routing_replay=True" \
   "trainer.use_v1=False" \
+  "data.trust_remote_code=True" \
   2>&1 | tee "${log_file}"
 run_rc=${PIPESTATUS[0]}
 set -e
