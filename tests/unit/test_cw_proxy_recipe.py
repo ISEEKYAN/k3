@@ -70,6 +70,7 @@ def test_jit_cache_is_persistent_keyed_and_fail_loud():
     assert "K3_TRAINING_IMAGE" in env
     assert "training_image_stat" in env
     assert "recipe_fingerprint" in env
+    assert '"${recipe_dir}/mcore-nvrx-capability.patch"' in env
     assert '"${recipe_dir}/mcore-fp32-hybrid-leaf.patch"' in env
     assert "k3_source_sha" in env
     assert "gpu_cc" in env
@@ -90,6 +91,7 @@ def test_jit_cache_is_persistent_keyed_and_fail_loud():
 def test_k3_mcore_overlay_detaches_fp32_dist_opt_shards():
     prepare = read("prepare_mcore_overlay.sh")
     patch = read("mcore-fp32-hybrid-leaf.patch")
+    nvrx_patch = read("mcore-nvrx-capability.patch")
     env = read("k3_training_env.sh")
 
     assert "git clone --no-hardlinks" in prepare
@@ -99,6 +101,9 @@ def test_k3_mcore_overlay_detaches_fp32_dist_opt_shards():
     assert "git reset" not in prepare
     assert "model_param.detach().view(-1)" in patch
     assert "model_param.view(-1)" in patch
+    assert "if not is_nvrx_min_version():" in nvrx_patch
+    assert "return False" in nvrx_patch
+    assert 'for mcore_patch in "${mcore_patches[@]}"' in env
     assert 'apply --reverse --check "${mcore_patch}"' in env
     assert 'mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)' in env
 

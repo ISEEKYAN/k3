@@ -7,8 +7,11 @@ source "${recipe_dir}/image.env"
 : "${MCORE_BASE_ROOT:?set MCORE_BASE_ROOT to the pinned clean MCore checkout}"
 : "${K3_MEGATRON_ROOT:?image.env must define the K3-only MCore overlay}"
 
-patch_file="${recipe_dir}/mcore-fp32-hybrid-leaf.patch"
-target_file="megatron/core/optimizer/distrib_optimizer.py"
+patch_files=(
+  "${recipe_dir}/mcore-nvrx-capability.patch"
+  "${recipe_dir}/mcore-fp32-hybrid-leaf.patch"
+)
+expected_changed=$'megatron/core/dist_checkpointing/strategies/nvrx.py\nmegatron/core/optimizer/distrib_optimizer.py'
 
 if [[ ! -d "${K3_MEGATRON_ROOT}/.git" ]]; then
   git clone --no-hardlinks "${MCORE_BASE_ROOT}" "${K3_MEGATRON_ROOT}"
@@ -20,15 +23,17 @@ if [[ "${actual}" != "${MCORE_SOURCE_SHA}" ]]; then
   exit 2
 fi
 
-if git -C "${K3_MEGATRON_ROOT}" apply --check "${patch_file}"; then
-  git -C "${K3_MEGATRON_ROOT}" apply "${patch_file}"
-elif ! git -C "${K3_MEGATRON_ROOT}" apply --reverse --check "${patch_file}"; then
-  echo "FATAL MCore overlay is neither clean nor exactly patched" >&2
-  exit 2
-fi
+for patch_file in "${patch_files[@]}"; do
+  if git -C "${K3_MEGATRON_ROOT}" apply --check "${patch_file}"; then
+    git -C "${K3_MEGATRON_ROOT}" apply "${patch_file}"
+  elif ! git -C "${K3_MEGATRON_ROOT}" apply --reverse --check "${patch_file}"; then
+    echo "FATAL MCore overlay is neither clean nor exactly patched: ${patch_file}" >&2
+    exit 2
+  fi
+done
 
 changed=$(git -C "${K3_MEGATRON_ROOT}" diff --name-only)
-if [[ "${changed}" != "${target_file}" ]]; then
+if [[ "${changed}" != "${expected_changed}" ]]; then
   echo "FATAL unexpected MCore overlay changes: ${changed}" >&2
   exit 2
 fi

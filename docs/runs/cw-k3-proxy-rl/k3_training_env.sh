@@ -31,13 +31,19 @@ assert_source_sha() {
 assert_source_sha "${MLITE_ROOT}" "${MLITE_SOURCE_SHA}" MLite
 assert_source_sha "${VERL_ROOT}" "${VERL_SOURCE_SHA}" VERL
 assert_source_sha "${MEGATRON_ROOT}" "${MCORE_SOURCE_SHA}" MCore
-mcore_patch="${recipe_dir}/mcore-fp32-hybrid-leaf.patch"
-if ! git -C "${MEGATRON_ROOT}" apply --reverse --check "${mcore_patch}"; then
-  echo "FATAL K3 MCore FP32 Hybrid leaf patch is not applied" >&2
-  exit 2
-fi
+mcore_patches=(
+  "${recipe_dir}/mcore-nvrx-capability.patch"
+  "${recipe_dir}/mcore-fp32-hybrid-leaf.patch"
+)
+for mcore_patch in "${mcore_patches[@]}"; do
+  if ! git -C "${MEGATRON_ROOT}" apply --reverse --check "${mcore_patch}"; then
+    echo "FATAL K3 MCore overlay patch is not applied: ${mcore_patch}" >&2
+    exit 2
+  fi
+done
 mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)
-if [[ "${mcore_changed}" != "megatron/core/optimizer/distrib_optimizer.py" ]]; then
+expected_mcore_changed=$'megatron/core/dist_checkpointing/strategies/nvrx.py\nmegatron/core/optimizer/distrib_optimizer.py'
+if [[ "${mcore_changed}" != "${expected_mcore_changed}" ]]; then
   echo "FATAL unexpected K3 MCore overlay changes: ${mcore_changed}" >&2
   exit 2
 fi
@@ -81,6 +87,7 @@ recipe_fingerprint=$(
   sha256sum \
     "${recipe_dir}/image.env" \
     "${BASH_SOURCE[0]}" \
+    "${recipe_dir}/mcore-nvrx-capability.patch" \
     "${recipe_dir}/mcore-fp32-hybrid-leaf.patch" \
     | sha256sum \
     | cut -d' ' -f1
