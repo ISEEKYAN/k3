@@ -50,7 +50,7 @@ def test_training_environment_preserves_three_pollution_boundaries():
     assert "TRAINING_VLLM_SITE" not in env
     assert "MLITE_SM90_SITE" not in env
     assert (
-        'export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
+        'export PYTHONPATH="${PYVERS_SITE}:${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
         in env
     )
     assert (
@@ -260,8 +260,9 @@ def test_tensordict_only_site_is_first_and_package_paths_fail_loud():
     validate = read("assert_runtime_package_paths.py")
 
     assert "K3_TENSORDICT_SITE=" in image
+    assert "K3_PYVERS_SITE=" in image
     assert (
-        'export PYTHONPATH="${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
+        'export PYTHONPATH="${PYVERS_SITE}:${TENSORDICT_SITE}:${VLLM_SITE}:${FLA_SITE}:'
         in env
     )
     for package in (
@@ -271,9 +272,11 @@ def test_tensordict_only_site_is_first_and_package_paths_fail_loud():
         "vllm._C",
         "tensordict",
         "ray",
+        "pyvers",
     ):
         assert package in validate
     assert '"0.10.0"' in validate
+    assert '"0.2.2"' in validate
     assert "K3_RUNTIME_PACKAGE_PATHS_OK" in validate
 
 

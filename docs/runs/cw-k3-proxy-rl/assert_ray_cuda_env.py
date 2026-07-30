@@ -25,6 +25,7 @@ ray.init(
     runtime_env={
         "env_vars": {
             "PYTHONPATH": os.environ["PYTHONPATH"],
+            "PYVERS_SITE": os.environ["PYVERS_SITE"],
             "RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES": "1",
             "TENSORDICT_SITE": os.environ["TENSORDICT_SITE"],
             "VERL_DEPS_SITE": os.environ["VERL_DEPS_SITE"],
