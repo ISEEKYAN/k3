@@ -61,6 +61,16 @@ def ensure_flash_attn_mla_compatibility() -> None:
     print("K3_VLLM_FA3_CP_COMPAT nonpositive_to_one=enabled", flush=True)
 
 
+def ensure_k3_warmup_compatibility() -> None:
+    """Restore the K3 warmup implementation omitted by the Python overlay."""
+    from k3_vllm_warmup import kimi_k3_triton_warmup
+    from vllm.model_executor.warmup import kernel_warmup
+
+    if not hasattr(kernel_warmup, "kimi_k3_triton_warmup"):
+        kernel_warmup.kimi_k3_triton_warmup = kimi_k3_triton_warmup
+        print("K3_VLLM_WARMUP_COMPAT restored=pr50000", flush=True)
+
+
 def initialize_world() -> None:
     if envs.VLLM_DISTRIBUTED_USE_SPLIT_GROUP:
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -79,6 +89,7 @@ def main() -> None:
     ensure_k3_env_compatibility()
     ensure_moe_sum_compatibility()
     ensure_flash_attn_mla_compatibility()
+    ensure_k3_warmup_compatibility()
     initialize_world()
     rank = dist.get_rank()
 

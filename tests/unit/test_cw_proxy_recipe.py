@@ -293,6 +293,13 @@ def test_proxy_generate_reuses_external_launcher_at_tp8():
     assert "ensure_flash_attn_mla_compatibility()" in driver
     assert 'kwargs.get("cp_world_size", 1) <= 0' in driver
     assert 'kwargs["cp_world_size"] = 1' in driver
+    assert "ensure_k3_warmup_compatibility()" in driver
+    assert "kernel_warmup.kimi_k3_triton_warmup = kimi_k3_triton_warmup" in driver
+    warmup = read("k3_vllm_warmup.py")
+    assert "def _get_kda_layer(" in warmup
+    assert "def _warm_attn_res(" in warmup
+    assert "def _warm_recurrent_kda(" in warmup
+    assert "def kimi_k3_triton_warmup(" in warmup
     assert "K3_PROXY_GENERATE_OK" in driver
 
 
