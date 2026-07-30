@@ -52,7 +52,9 @@ vllm_version=$("${python_bin}" -c 'import importlib.metadata; print(importlib.me
 if [[ -n "${K3_GPU_CC:-}" ]]; then
   gpu_cc="${K3_GPU_CC}"
 else
-  gpu_cc=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '[:space:].')
+  gpu_cc_output=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader)
+  gpu_cc="${gpu_cc_output%%$'\n'*}"
+  gpu_cc="${gpu_cc//[[:space:].]/}"
 fi
 
 training_image_stat=$(stat -Lc "%s:%Y" "${K3_TRAINING_IMAGE}")

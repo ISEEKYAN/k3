@@ -68,6 +68,8 @@ def test_jit_cache_is_persistent_keyed_and_fail_loud():
     assert "runtime_image_fingerprint" in env
     assert "TILELANG_CACHE_DIR" in env
     assert "TILELANG_TMP_DIR" in env
+    assert "gpu_cc_output=" in env
+    assert "head -1" not in env
 
 
 def test_overlay_validation_is_inside_srun():
