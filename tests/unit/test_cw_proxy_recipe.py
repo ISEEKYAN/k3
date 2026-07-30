@@ -105,6 +105,18 @@ def test_k3_mcore_overlay_detaches_fp32_dist_opt_shards():
     assert "return False" in nvrx_patch
     assert 'for mcore_patch in "${mcore_patches[@]}"' in env
     assert 'apply --reverse --check "${mcore_patch}"' in env
+
+
+def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
+    prepare = read("prepare_vllm_overlay.sh")
+    patch_text = read("vllm-k3-routed-stream-threshold.patch")
+    env = read("k3_training_env.sh")
+
+    assert "_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD = 256" in patch_text
+    assert "envs.VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD" in patch_text
+    assert "if num_tokens <= _ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD" in patch_text
+    assert 'patch --dry-run --silent -p1 -d "${K3_VLLM_SITE}"' in prepare
+    assert 'patch --dry-run --silent --reverse -p1 -d "${VLLM_SITE}"' in env
     assert 'mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)' in env
 
 

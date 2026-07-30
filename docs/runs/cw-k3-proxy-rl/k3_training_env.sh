@@ -41,6 +41,11 @@ for mcore_patch in "${mcore_patches[@]}"; do
     exit 2
   fi
 done
+vllm_patch="${recipe_dir}/vllm-k3-routed-stream-threshold.patch"
+if ! patch --dry-run --silent --reverse -p1 -d "${VLLM_SITE}" <"${vllm_patch}"; then
+  echo "FATAL K3 vLLM overlay patch is not applied: ${vllm_patch}" >&2
+  exit 2
+fi
 mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)
 expected_mcore_changed=$'megatron/core/dist_checkpointing/strategies/nvrx.py\nmegatron/core/optimizer/distrib_optimizer.py'
 if [[ "${mcore_changed}" != "${expected_mcore_changed}" ]]; then
