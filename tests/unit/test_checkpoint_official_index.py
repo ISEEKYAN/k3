@@ -42,6 +42,13 @@ def test_official_index_plans_every_tp2_ep2_pp2_rank_without_opening_shards():
     index = json.loads(index_path.read_text())["weight_map"]
     spec = K3WeightSpec(config, manifest=manifest)
     assert audit_k3_weight_spec_sources(spec, index) == 249756
+    expert_bias_sources = {
+        sources[0]
+        for native_name, sources in spec.weight_map().items()
+        if native_name.endswith(".moe.router.expert_bias")
+    }
+    assert len(expert_bias_sources) == 92
+    assert expert_bias_sources <= index.keys()
 
     pp_layers = (list(range(47)), list(range(47, 93)))
     plans = {}
@@ -77,6 +84,9 @@ def test_official_index_plans_every_tp2_ep2_pp2_rank_without_opening_shards():
         source for sources in spec.weight_map().values() for source in sources
     }
     assert covered_sources == expected_sources
+    assert expected_sources == {
+        source for source in index if source.startswith("language_model.")
+    }
 
     first = plans[0, 0, 0]
     last = plans[1, 1, 1]
@@ -93,6 +103,11 @@ def test_official_index_plans_every_tp2_ep2_pp2_rank_without_opening_shards():
     assert first_by_name["layers.0.self_attention.o_proj.linear.weight"].shape == (
         7168,
         6144,
+    )
+    assert first_by_name["layers.0.self_attention.k_conv1d.weight"].shape == (
+        6144,
+        1,
+        4,
     )
     assert first_by_name["layers.1.moe.experts.fc1.weight0"].shape == (6144, 3584)
     assert first_by_name["layers.1.moe.experts.fc2.weight0"].shape == (3584, 3072)

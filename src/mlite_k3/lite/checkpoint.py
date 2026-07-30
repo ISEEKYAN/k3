@@ -357,10 +357,6 @@ class K3WeightSpec:
             raise ValueError(f"{native_name!r} is not a K3 grouped-expert weight")
         return f"{match.group(1)}{local_idx}"
 
-    @staticmethod
-    def is_export_buffer(native_name: str) -> bool:
-        return native_name.endswith(".moe.router.expert_bias")
-
 
 def _k3_local_shape(
     native_name: str,

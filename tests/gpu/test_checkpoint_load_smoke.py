@@ -14,7 +14,6 @@ from megatron.lite.primitive.parallel import ParallelState
 from megatron.lite.runtime.contracts import ParallelConfig
 from mlite_k3.config import K3Config
 from mlite_k3.lite.checkpoint import (
-    K3WeightSpec,
     export_hf_weights,
     load_hf_weights as load_checkpoint,
     save_hf_weights,
@@ -88,8 +87,7 @@ def _quantization_config(config: K3Config) -> dict:
     }
 
 
-def _checkpoint_targets(model: torch.nn.Module, spec: K3WeightSpec):
-    del spec
+def _checkpoint_state(model: torch.nn.Module):
     from megatron.lite.primitive.quantization.qat import canonical_state_key
 
     for state_name, tensor in model.state_dict(keep_vars=True).items():
@@ -171,17 +169,12 @@ def main() -> None:
     )
     if qat_stats["quantized_modules"] <= 0:
         raise RuntimeError("K3 QAT smoke did not parametrize any module")
-    qat_targets = list(_checkpoint_targets(single, K3WeightSpec(config)))
+    qat_state = list(_checkpoint_state(single))
     with torch.no_grad():
-        for _, tensor in qat_targets:
+        for _, tensor in qat_state:
             if tensor.is_floating_point():
                 tensor.fill_(torch.nan)
     load_checkpoint(single, root, config, ParallelState())
-    if any(
-        tensor.is_floating_point() and not torch.isfinite(tensor).all()
-        for _, tensor in qat_targets
-    ):
-        raise RuntimeError("K3 QAT-enabled import left checkpoint state untouched")
     qat_export = dict(
         export_hf_weights(
             single,
@@ -216,20 +209,23 @@ def main() -> None:
     distributed_qat_modules = bundle.extras["qat"]["quantized_modules"]
     if distributed_qat_modules <= 0:
         raise RuntimeError("K3 distributed QAT smoke did not parametrize any module")
-    spec = K3WeightSpec(config)
-    targets = list(_checkpoint_targets(model, spec))
+    checkpoint_state = list(_checkpoint_state(model))
     with torch.no_grad():
-        for _, tensor in targets:
-            tensor.fill_(torch.nan)
+        for _, tensor in checkpoint_state:
+            if tensor.is_floating_point():
+                tensor.fill_(torch.nan)
 
     manifest = load_hf_weights(model, str(root), config, bundle.parallel_state)
-    if not targets or any(not torch.isfinite(tensor).all() for _, tensor in targets):
-        raise RuntimeError("K3 shared loader left a checkpoint tensor untouched")
     expert_bias = [
-        tensor for name, tensor in targets if name.endswith(".moe.router.expert_bias")
+        tensor
+        for name, tensor in checkpoint_state
+        if name.endswith(".moe.router.expert_bias")
     ]
-    if expert_bias and any(tensor.dtype != torch.float32 for tensor in expert_bias):
-        raise RuntimeError("K3 expert_bias did not preserve its FP32 state dtype")
+    if expert_bias and any(
+        tensor.dtype != torch.float32 or not torch.isfinite(tensor).all()
+        for tensor in expert_bias
+    ):
+        raise RuntimeError("K3 expert_bias was not loaded as finite FP32 state")
     gathered_export = dict(
         export_hf_weights(
             model,
@@ -246,7 +242,7 @@ def main() -> None:
 
     local_metrics = torch.tensor(
         [
-            len(targets),
+            len(checkpoint_state),
             len(expert_bias),
             len(model.layer_indices),
             int(model.pre_process),

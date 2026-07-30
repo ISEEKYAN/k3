@@ -354,8 +354,9 @@ def test_k3_weight_spec_implements_hf_weights_parallel_contract():
     assert spec.is_expert(expert)
     assert spec.expert_global_id(expert) == 0
     assert spec.expert_local_name(expert, 3) == "layers.1.moe.experts.fc1.weight3"
-    assert spec.is_export_buffer("layers.1.moe.router.expert_bias")
-    assert not spec.is_export_buffer("layers.1.moe.router.gate.weight")
+    assert spec.weight_map()["layers.1.moe.router.expert_bias"] == [
+        "language_model.model.layers.1.block_sparse_moe.gate.e_score_correction_bias"
+    ]
 
 
 def test_k3_weight_spec_materializes_mxfp4_sources_from_manifest():
