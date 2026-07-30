@@ -72,18 +72,24 @@ def ensure_k3_warmup_compatibility() -> None:
 
 
 def ensure_optional_router_warmup_compatibility() -> None:
-    """Skip the disabled ll_bf16 warmup when its optional compiler is absent."""
+    """Disable the optional ll_bf16 kernel when its compiler is absent."""
     from importlib.util import find_spec
 
+    from vllm.model_executor.kernels.linear.cute_dsl import ll_bf16
     from vllm.model_executor.warmup import kernel_warmup
 
     if find_spec("quack") is not None:
         return
 
+    def unavailable_without_quack() -> bool:
+        return False
+
     def skip_unavailable_ll_bf16_warmup(_model: torch.nn.Module) -> None:
         print("K3_VLLM_ROUTER_WARMUP skipped=missing_quack", flush=True)
 
+    ll_bf16.is_available = unavailable_without_quack
     kernel_warmup._warmup_ll_bf16_router_gemm = skip_unavailable_ll_bf16_warmup
+    print("K3_VLLM_ROUTER_KERNEL ll_bf16=disabled missing_quack", flush=True)
 
 
 def initialize_world() -> None:
