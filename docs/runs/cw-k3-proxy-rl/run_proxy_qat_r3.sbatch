@@ -153,7 +153,7 @@ bash "${MLITE_ROOT}/experimental/lite/examples/verl/scripts/run_qwen3moe_gsm8k_g
   "++actor_rollout_ref.actor.engine.impl_cfg.moe_router_fusion=false" \
   "++actor_rollout_ref.actor.engine.router_replay_mode=R3" \
   "actor_rollout_ref.rollout.enable_rollout_routing_replay=True" \
-  "actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.cudagraph_mode=NONE" \
+  "+actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.cudagraph_mode=NONE" \
   "trainer.use_v1=False" \
   "data.trust_remote_code=True" \
   "++ray_kwargs.ray_init.runtime_env.env_vars.RAY_EXPERIMENTAL_NOSET_ROCR_VISIBLE_DEVICES=\"1\"" \
