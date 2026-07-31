@@ -30,6 +30,7 @@ def test_active_runtime_recipes_reuse_the_proven_training_base():
     for name in (
         "run_proxy_generate.sbatch",
         "run_proxy_qat_r3.sbatch",
+        "run_rollout_init.sbatch",
         "run_proxy_stage.sbatch",
     ):
         assert '--container-image="${K3_TRAINING_IMAGE}"' in read(name)
@@ -545,8 +546,8 @@ def test_proxy_generate_reuses_external_launcher_at_tp8():
     assert "unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH" in carrier
     assert "LD_PRELOAD" not in carrier
     assert "K3_GENERATE_WANDB_URL" in driver
-    assert 'assert int(os.environ["WORLD_SIZE"]) == 8' in driver
-    assert "tensor_parallel_size=8" in driver
+    assert 'int(os.environ.get("K3_ROLLOUT_TP", "8"))' in driver
+    assert "tensor_parallel_size=rollout_tp" in driver
     assert "enable_expert_parallel=False" in driver
     assert 'distributed_executor_backend="external_launcher"' in driver
     assert "skip_tokenizer_init=True" in driver
@@ -568,6 +569,35 @@ def test_proxy_generate_reuses_external_launcher_at_tp8():
     assert "def _warm_recurrent_kda(" in warmup
     assert "def kimi_k3_triton_warmup(" in warmup
     assert "K3_PROXY_GENERATE_OK" in driver
+
+
+def test_rollout_only_carrier_uses_two_gpus_and_has_its_own_contract():
+    carrier = read("run_rollout_init.sbatch")
+    driver = read("run_proxy_generate.py")
+
+    assert "#SBATCH --ntasks-per-node=2" in carrier
+    assert "#SBATCH --gpus-per-node=2" in carrier
+    assert "K3_ROLLOUT_TP=2" in carrier
+    assert "K3_SUCCESS_MARKER=K3_ROLLOUT_INIT_OK" in carrier
+    assert "K3_LOG_WANDB=0" in carrier
+    assert "--export=ALL" not in carrier
+    assert (
+        carrier.count("export PATH=/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin")
+        == 1
+    )
+    assert carrier.count("export CC=/usr/bin/gcc") == 2
+    assert carrier.count("export CXX=/usr/bin/g++") == 2
+    assert carrier.count("export CPATH=/usr/include/x86_64-linux-gnu") == 2
+    assert "--export=PATH,CC,CXX" not in carrier
+    assert "--export=PATH,CPATH" in carrier
+    assert "K3_ROLLOUT_TOOLCHAIN_OK" in carrier
+    assert "compiler_path=$(command -v gcc)" in carrier
+    assert "*miniforge*|*conda*" in carrier
+    assert 'sys.executable == \\"/usr/bin/python3\\"' in carrier
+    assert '\\"nv26.05\\" in torch.__version__' in carrier
+    assert "run_proxy_generate.py" in carrier
+    assert "engine_ready_seconds" in driver
+    assert 'os.environ.get("K3_SUCCESS_MARKER", "K3_PROXY_GENERATE_OK")' in driver
 
 
 def test_kda_backward_probe_is_one_gpu_and_uses_production_shape():
