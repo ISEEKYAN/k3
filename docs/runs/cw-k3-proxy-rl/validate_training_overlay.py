@@ -24,6 +24,7 @@ def _under(module_file: str, root: str) -> bool:
 
 assert _under(vllm.__file__, os.environ["VLLM_SITE"]), vllm.__file__
 assert kernel_warmup.kimi_k3_triton_warmup is kimi_k3_triton_warmup
+kernel_warmup._warmup_ll_bf16_router_gemm(object())
 assert _under(fla.__file__, os.environ["FLA_SITE"]), fla.__file__
 assert _under(
     cutlass.cute.__file__, os.environ["CUTLASS_DSL_SITE"]
