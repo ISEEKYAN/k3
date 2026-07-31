@@ -22,7 +22,7 @@ def test_image_contract_reuses_the_proven_k3_vllm_overlay():
     assert "qwen35-cp-overlay-20260613/site" in image
     assert "nvidia_cutlass_dsl/python_packages" in image
     assert "mcore-fp32-hybrid-leaf" in image
-    assert "verl-src-mxfp4-r1" in image
+    assert "verl-src-mxfp4-r2" in image
     assert "MLITE_SOURCE_SHA=cc4efe6a1" in image
 
 
