@@ -38,6 +38,15 @@ def test_active_runtime_recipes_reuse_the_proven_training_base():
     )
 
 
+def test_qat_recipe_disables_cudagraph_capture_while_using_k3_aux_streams():
+    recipe = read("run_proxy_qat_r3.sbatch")
+
+    assert (
+        'actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.'
+        'cudagraph_mode=NONE'
+    ) in recipe
+
+
 def test_training_environment_preserves_three_pollution_boundaries():
     env = read("k3_training_env.sh")
 
