@@ -1,10 +1,7 @@
 diff --git a/vllm/model_executor/kernels/linear/cute_dsl/ll_bf16.py b/vllm/model_executor/kernels/linear/cute_dsl/ll_bf16.py
 --- a/vllm/model_executor/kernels/linear/cute_dsl/ll_bf16.py
 +++ b/vllm/model_executor/kernels/linear/cute_dsl/ll_bf16.py
-@@ -21,3 +21,4 @@ def is_available() -> bool:
-     try:
-         import cutlass  # noqa: F401
-         import cutlass.cute  # noqa: F401
+@@ -25,0 +26 @@
 +        import quack.compile_utils  # noqa: F401
 diff --git a/vllm/model_executor/warmup/kernel_warmup.py b/vllm/model_executor/warmup/kernel_warmup.py
 --- a/vllm/model_executor/warmup/kernel_warmup.py
