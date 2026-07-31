@@ -11,25 +11,31 @@ from mlite_k3.validation_harness import (
     tier_plan,
     write_run_record,
 )
-from mlite_k3.validation_schema import capability_cells
 
 
 def _completed_run(
     tmp_path: Path,
     *,
     tier: str = "checkpoint_gather_1n",
-    capabilities: tuple[str, ...] | None = None,
+    assertions: tuple[tuple[str, str], ...] = (
+        (
+            "router_expert_bias.load",
+            "expert_bias_is_finite_fp32",
+        ),
+    ),
     axes: tuple[str, ...] = ("tp", "ep", "pp"),
 ) -> Path:
     run_dir = tmp_path / tier
     run_dir.mkdir()
-    reported_capabilities = capabilities or capability_cells()
     (run_dir / "stdout.log").write_text(
         "K3_CHECKPOINT_LOAD_SMOKE="
         + json.dumps(
             {
                 "world_size": 8,
-                "capabilities": reported_capabilities,
+                "assertions": [
+                    {"cell": cell, "assertion": assertion}
+                    for cell, assertion in assertions
+                ],
                 "axes": axes,
             }
         )
@@ -74,7 +80,7 @@ def test_tiers_prioritize_one_and_two_node_interactive_gather_validation():
     assert "axes" not in one
 
 
-def test_finalize_derives_capabilities_and_axes_from_completed_run(tmp_path):
+def test_finalize_binds_each_explicit_cell_to_its_assertion_and_job(tmp_path):
     run_dir = _completed_run(tmp_path)
     bundle_path = tmp_path / "evidence.json"
 
@@ -87,17 +93,18 @@ def test_finalize_derives_capabilities_and_axes_from_completed_run(tmp_path):
 
     assert evidence.git_commit == "c3b1a4cd27"
     assert set(evidence.axes) == {"tp", "ep", "pp"}
-    assert evidence.capabilities["router_expert_bias.load"][0].startswith("test:")
+    sources = evidence.capabilities["router_expert_bias.load"]
+    assert any("::expert_bias_is_finite_fp32#sha256:" in source for source in sources)
     assert any(
-        source.startswith("job:12345#sha256:")
-        for source in evidence.capabilities["moe.export_bf16"]
+        source.startswith("job:12345:assertion:expert_bias_is_finite_fp32#sha256:")
+        for source in sources
     )
 
 
-def test_capabilities_are_derived_from_test_report_not_tier_declaration(tmp_path):
+def test_capabilities_are_derived_from_individual_assertion_records(tmp_path):
     run_dir = _completed_run(
         tmp_path,
-        capabilities=("moe.export_bf16",),
+        assertions=(("moe.export_bf16", "export_matches_baseline"),),
         axes=("ep",),
     )
     bundle_path = tmp_path / "evidence.json"
@@ -113,7 +120,54 @@ def test_capabilities_are_derived_from_test_report_not_tier_declaration(tmp_path
     assert set(evidence.axes) == {"ep"}
 
 
-def test_missing_test_reported_capabilities_cannot_sign_coverage(tmp_path):
+def test_one_run_cannot_claim_multiple_coverage_cells(tmp_path):
+    run_dir = _completed_run(
+        tmp_path,
+        assertions=(
+            ("moe.export_bf16", "export_matches_baseline"),
+            ("router_expert_bias.load", "expert_bias_is_finite_fp32"),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="exactly one assertion"):
+        finalize_evidence_bundle(
+            [run_dir],
+            tmp_path / "evidence.json",
+            sacct_query=_completed_sacct,
+        )
+
+
+def test_one_slurm_job_cannot_be_reused_to_claim_multiple_coverage_cells(tmp_path):
+    first_run = _completed_run(
+        tmp_path,
+        assertions=(("router_expert_bias.load", "expert_bias_is_finite_fp32"),),
+    )
+    second_run = _completed_run(
+        tmp_path,
+        tier="checkpoint_gather_2n",
+        assertions=(("moe.export_bf16", "export_matches_baseline"),),
+    )
+
+    with pytest.raises(RuntimeError, match="multiple execution outputs"):
+        finalize_evidence_bundle(
+            [first_run, second_run],
+            tmp_path / "evidence.json",
+            sacct_query=_completed_sacct,
+        )
+
+
+def test_smoke_without_cell_assertions_leaves_the_matrix_uncovered(tmp_path):
+    run_dir = _completed_run(tmp_path, assertions=(), axes=("tp",))
+    bundle_path = tmp_path / "evidence.json"
+
+    finalize_evidence_bundle([run_dir], bundle_path, sacct_query=_completed_sacct)
+    evidence = load_evidence_bundle(bundle_path)
+
+    assert evidence.capabilities == {}
+    assert set(evidence.axes) == {"tp"}
+
+
+def test_missing_test_reported_assertions_cannot_sign_coverage(tmp_path):
     run_dir = _completed_run(tmp_path)
     (run_dir / "stdout.log").write_text(
         'K3_CHECKPOINT_LOAD_SMOKE={"world_size": 8}\n',
@@ -135,7 +189,7 @@ def test_missing_test_reported_capabilities_cannot_sign_coverage(tmp_path):
         slurm_partition="interactive",
     )
 
-    with pytest.raises(RuntimeError, match="reported capabilities"):
+    with pytest.raises(RuntimeError, match="reported assertions"):
         finalize_evidence_bundle(
             [run_dir],
             tmp_path / "evidence.json",
@@ -177,3 +231,27 @@ def test_tampered_run_artifact_breaks_bundle_verification(tmp_path):
 
     with pytest.raises(RuntimeError, match="artifact digest"):
         load_evidence_bundle(bundle_path)
+
+
+def test_legacy_blanket_capability_list_is_rejected(tmp_path):
+    run_dir = _completed_run(tmp_path)
+    (run_dir / "stdout.log").write_text(
+        'K3_CHECKPOINT_LOAD_SMOKE={"capabilities":["dense.load"],"axes":[]}\n',
+        encoding="utf-8",
+    )
+    write_run_record(
+        run_dir,
+        tier="checkpoint_gather_1n",
+        command=["torchrun", "tests/gpu/test_checkpoint_load_smoke.py"],
+        returncode=0,
+        duration_seconds=12.5,
+        git_commit="c3b1a4cd27",
+        slurm_job_id="12345",
+        slurm_nodes=1,
+        slurm_partition="interactive",
+    )
+
+    with pytest.raises(RuntimeError, match="reported assertions"):
+        finalize_evidence_bundle(
+            [run_dir], tmp_path / "evidence.json", sacct_query=_completed_sacct
+        )

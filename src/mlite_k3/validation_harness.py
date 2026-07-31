@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -24,6 +25,7 @@ _GENERATOR = "mlite_k3.validation_harness"
 _CHECKPOINT_TEST_ID = "tests/gpu/test_checkpoint_load_smoke.py::main"
 _CHECKPOINT_SCRIPT = "tests/gpu/test_checkpoint_load_smoke.py"
 _CHECKPOINT_MARKER = "K3_CHECKPOINT_LOAD_SMOKE="
+_ASSERTION_NAME = re.compile(r"[a-z][a-z0-9_]*\Z")
 
 
 @dataclass(frozen=True)
@@ -236,9 +238,7 @@ def _query_sacct(job_id: str) -> str:
     return completed.stdout
 
 
-def _parse_test_report(
-    stdout: Path, tier: ValidationTier
-) -> dict[str, tuple[str, ...]]:
+def _parse_test_report(stdout: Path, tier: ValidationTier) -> dict[str, Any]:
     prefix = tier.success_marker
     payloads = [
         line.removeprefix(prefix)
@@ -255,31 +255,53 @@ def _parse_test_report(
         raise RuntimeError(f"invalid {prefix!r} test report") from error
     if not isinstance(report, dict):
         raise RuntimeError(f"{prefix!r} test report must be a JSON object")
-    raw_capabilities = report.get("capabilities")
+    raw_assertions = report.get("assertions")
     raw_axes = report.get("axes")
     if (
-        not isinstance(raw_capabilities, list)
-        or not all(isinstance(value, str) for value in raw_capabilities)
+        "capabilities" in report
+        or not isinstance(raw_assertions, list)
+        or not all(
+            isinstance(value, dict)
+            and set(value) == {"cell", "assertion"}
+            and isinstance(value["cell"], str)
+            and isinstance(value["assertion"], str)
+            for value in raw_assertions
+        )
         or not isinstance(raw_axes, list)
         or not all(isinstance(value, str) for value in raw_axes)
     ):
         raise RuntimeError(
-            "invalid test-reported capabilities or axes: "
-            f"reported capabilities={raw_capabilities!r}, axes={raw_axes!r}"
+            "invalid test-reported assertions or axes: "
+            f"reported assertions={raw_assertions!r}, axes={raw_axes!r}"
         )
-    capabilities = tuple(dict.fromkeys(raw_capabilities))
+    assertions = tuple((value["cell"], value["assertion"]) for value in raw_assertions)
+    if len(assertions) > 1:
+        raise RuntimeError(
+            "each execution output must bind exactly one assertion to one coverage "
+            f"cell, got {list(assertions)}"
+        )
     axes = tuple(dict.fromkeys(raw_axes))
     valid_capabilities = set(capability_cells())
-    unknown_capabilities = sorted(set(capabilities) - valid_capabilities)
+    unknown_cells = sorted({cell for cell, _ in assertions} - valid_capabilities)
+    invalid_assertions = sorted(
+        assertion
+        for _, assertion in assertions
+        if _ASSERTION_NAME.fullmatch(assertion) is None
+    )
+    duplicate_cells = sorted(
+        cell
+        for cell in {cell for cell, _ in assertions}
+        if sum(candidate == cell for candidate, _ in assertions) != 1
+    )
     unknown_axes = sorted(set(axes) - set(VALIDATION_AXES))
-    if not capabilities or unknown_capabilities or unknown_axes:
+    if unknown_cells or invalid_assertions or duplicate_cells or unknown_axes:
         raise RuntimeError(
-            "invalid test-reported capabilities or axes: "
-            f"reported capabilities={list(capabilities)}, "
-            f"unknown_capabilities={unknown_capabilities}, "
+            "invalid test-reported assertions or axes: "
+            f"reported assertions={list(assertions)}, unknown_cells={unknown_cells}, "
+            f"invalid_assertions={invalid_assertions}, duplicate_cells={duplicate_cells}, "
             f"unknown_axes={unknown_axes}"
         )
-    return {"capabilities": capabilities, "axes": axes}
+    return {"assertions": assertions, "axes": axes}
 
 
 def _validate_completed_run(
@@ -335,6 +357,7 @@ def finalize_evidence_bundle(
     destination = Path(output)
     entries = []
     commits = set()
+    seen_job_ids = set()
     for run_dir in run_dirs:
         root = Path(run_dir)
         record = _load_run_record(root / "run.json")
@@ -345,6 +368,12 @@ def finalize_evidence_bundle(
             root / "run.json",
             sacct_path,
         )
+        if sacct["job_id"] in seen_job_ids:
+            raise RuntimeError(
+                "one Slurm job cannot certify multiple execution outputs: "
+                f"{sacct['job_id']}"
+            )
+        seen_job_ids.add(sacct["job_id"])
         commits.add(verified["git_commit"])
         entries.append(
             {
@@ -387,6 +416,7 @@ def load_evidence_bundle(path: str | Path) -> VerifiedEvidence:
     capabilities: dict[str, list[str]] = {}
     axes: dict[str, list[str]] = {}
     verified_runs = []
+    seen_job_ids = set()
     for entry in bundle.get("runs", ()):
         record_path = source.parent / entry["record"]
         sacct_path = source.parent / entry["sacct"]
@@ -399,11 +429,29 @@ def load_evidence_bundle(path: str | Path) -> VerifiedEvidence:
             raise RuntimeError("run commit does not match evidence bundle commit")
         if sacct["job_id"] != entry["job_id"]:
             raise RuntimeError("sacct job id does not match evidence bundle")
-        test_source = f"test:{tier.test_id}#sha256:{record['fingerprint']}"
-        job_source = f"job:{sacct['job_id']}#sha256:{entry['sacct_sha256']}"
-        for capability in test_report["capabilities"]:
-            capabilities.setdefault(capability, []).extend((test_source, job_source))
+        if sacct["job_id"] in seen_job_ids:
+            raise RuntimeError(
+                "one Slurm job cannot certify multiple execution outputs: "
+                f"{sacct['job_id']}"
+            )
+        seen_job_ids.add(sacct["job_id"])
+        for cell, assertion in test_report["assertions"]:
+            test_source = (
+                f"test:{tier.test_id}::{assertion}#sha256:{record['fingerprint']}"
+            )
+            job_source = (
+                f"job:{sacct['job_id']}:assertion:{assertion}"
+                f"#sha256:{entry['sacct_sha256']}"
+            )
+            capabilities.setdefault(cell, []).extend((test_source, job_source))
         for axis in test_report["axes"]:
+            test_source = (
+                f"test:{tier.test_id}::parallel_topology#sha256:{record['fingerprint']}"
+            )
+            job_source = (
+                f"job:{sacct['job_id']}:assertion:parallel_topology"
+                f"#sha256:{entry['sacct_sha256']}"
+            )
             axes.setdefault(axis, []).extend((test_source, job_source))
         verified_runs.append(
             {
