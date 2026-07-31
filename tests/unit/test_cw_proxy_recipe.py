@@ -164,6 +164,7 @@ def test_overlay_validation_is_inside_srun():
     assert "validate_training_overlay.py" in sbatch
     assert "transformer_engine.pytorch" in validation
     assert '"vllm_file": vllm.__file__' in validation
+    assert "kernel_warmup.kimi_k3_triton_warmup is kimi_k3_triton_warmup" in validation
     assert '"transformer_engine_file": transformer_engine.__file__' in validation
     assert "import fla" in validation
     assert '"fla_file": fla.__file__' in validation

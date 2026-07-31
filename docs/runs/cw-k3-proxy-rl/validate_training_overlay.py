@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 
 import vllm
+from k3_vllm_warmup import kimi_k3_triton_warmup
+from vllm.model_executor.warmup import kernel_warmup
 import transformer_engine
 import transformer_engine.pytorch as te
 import fla
@@ -21,6 +23,7 @@ def _under(module_file: str, root: str) -> bool:
 
 
 assert _under(vllm.__file__, os.environ["VLLM_SITE"]), vllm.__file__
+assert kernel_warmup.kimi_k3_triton_warmup is kimi_k3_triton_warmup
 assert _under(fla.__file__, os.environ["FLA_SITE"]), fla.__file__
 assert _under(
     cutlass.cute.__file__, os.environ["CUTLASS_DSL_SITE"]
