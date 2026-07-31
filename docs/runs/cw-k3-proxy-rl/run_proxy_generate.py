@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import torch
@@ -85,7 +86,8 @@ def initialize_world() -> None:
 
 def main() -> None:
     assert "RAY_ADDRESS" not in os.environ
-    assert int(os.environ["WORLD_SIZE"]) == 8
+    rollout_tp = int(os.environ.get("K3_ROLLOUT_TP", "8"))
+    assert int(os.environ["WORLD_SIZE"]) == rollout_tp
     ensure_k3_env_compatibility()
     ensure_moe_sum_compatibility()
     ensure_flash_attn_mla_compatibility()
@@ -102,10 +104,11 @@ def main() -> None:
             flush=True,
         )
 
+    engine_start = time.monotonic()
     llm = LLM(
         model=os.environ["K3_MODEL_PATH"],
         trust_remote_code=True,
-        tensor_parallel_size=8,
+        tensor_parallel_size=rollout_tp,
         # H100 uses the Marlin MXFP4 fallback. This overlay's Marlin post-load
         # path assumes the full expert axis and is not compatible with EP
         # sharding, so this rollout gate uses TP8 without EP.
@@ -116,6 +119,7 @@ def main() -> None:
         seed=1,
         skip_tokenizer_init=True,
     )
+    engine_ready_seconds = time.monotonic() - engine_start
     outputs = llm.generate(
         [TokensPrompt(prompt_token_ids=[1, 2, 3, 4])],
         SamplingParams(temperature=0.0, max_tokens=8),
@@ -127,25 +131,29 @@ def main() -> None:
         result = {
             "backend": "external_launcher",
             "world_size": dist.get_world_size(),
-            "tensor_parallel_size": 8,
+            "tensor_parallel_size": rollout_tp,
             "expert_parallel": False,
+            "engine_ready_seconds": engine_ready_seconds,
             "prompt_token_ids": [1, 2, 3, 4],
             "generated_token_ids": token_ids,
         }
         Path(os.environ["K3_RESPONSE_FILE"]).write_text(
             json.dumps(result, indent=2) + "\n"
         )
-        run = wandb.init(
-            entity=os.environ.get("WANDB_ENTITY", "megatron-core-moe-dev"),
-            project=os.environ.get("WANDB_PROJECT", "k3-proxy-generate"),
-            name=os.environ.get("RUN_NAME", "k3-proxy-12l-56e-generate"),
-            config=result,
-        )
-        run.log({"generated_tokens": len(token_ids)})
-        print(f"K3_GENERATE_WANDB_URL {run.url}", flush=True)
-        run.finish()
+        if os.environ.get("K3_LOG_WANDB", "1") == "1":
+            run = wandb.init(
+                entity=os.environ.get("WANDB_ENTITY", "megatron-core-moe-dev"),
+                project=os.environ.get("WANDB_PROJECT", "k3-proxy-generate"),
+                name=os.environ.get("RUN_NAME", "k3-proxy-12l-56e-generate"),
+                config=result,
+            )
+            run.log({"generated_tokens": len(token_ids)})
+            print(f"K3_GENERATE_WANDB_URL {run.url}", flush=True)
+            run.finish()
+        success_marker = os.environ.get("K3_SUCCESS_MARKER", "K3_PROXY_GENERATE_OK")
         print(
-            "K3_PROXY_GENERATE_OK",
+            success_marker,
+            f"engine_ready_seconds={engine_ready_seconds:.3f}",
             f"generated_token_ids={token_ids}",
             flush=True,
         )

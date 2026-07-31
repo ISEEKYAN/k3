@@ -74,13 +74,16 @@ def main() -> None:
     parser.add_argument("--stage", choices=("construct", "fwbw", "qat"), required=True)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--sequence-length", type=int, default=16)
+    parser.add_argument("--success-marker", default="K3_PROXY_STAGE_OK")
     args = parser.parse_args()
 
     dist.init_process_group("nccl")
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    if world_size != 8:
-        raise RuntimeError(f"K3 proxy stages require exactly 8 ranks, got {world_size}")
+    if 56 % world_size != 0:
+        raise RuntimeError(
+            f"K3 proxy experts require an EP divisor of 56, got {world_size}"
+        )
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
@@ -96,7 +99,7 @@ def main() -> None:
     bundle = build_model(
         config,
         impl_cfg=ImplConfig(
-            parallel=ParallelConfig(tp=1, ep=8, etp=1, pp=1, cp=1),
+            parallel=ParallelConfig(tp=1, ep=world_size, etp=1, pp=1, cp=1),
             device=f"cuda:{local_rank}",
             dtype="bfloat16",
             qat={
@@ -151,11 +154,22 @@ def main() -> None:
                 f"non-finite proxy step loss={float(loss.detach())} "
                 f"finite_grads={finite_grads}"
             )
+        gradient_abs_sum = torch.zeros((), device=device, dtype=torch.float64)
+        for parameter in model.parameters():
+            if parameter.grad is not None:
+                gradient_abs_sum += parameter.grad.detach().double().abs().sum()
+        dist.all_reduce(gradient_abs_sum)
+        if not torch.isfinite(gradient_abs_sum) or gradient_abs_sum <= 0:
+            raise RuntimeError(f"non-positive gradient sum: {float(gradient_abs_sum)}")
         result["loss"] = float(loss.detach())
         result["finite_grads"] = finite_grads
+        result["gradient_abs_sum"] = float(gradient_abs_sum)
 
     if rank == 0:
-        print("K3_PROXY_STAGE_OK=" + json.dumps(result, sort_keys=True), flush=True)
+        print(
+            args.success_marker + "=" + json.dumps(result, sort_keys=True),
+            flush=True,
+        )
     dist.destroy_process_group()
 
 

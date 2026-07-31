@@ -32,8 +32,14 @@ remaining recipes reuse that file instead of importing Docker layers again.
 
 Run `validate_training_overlay.sbatch` first. Its import test is deliberately
 inside `srun`; login-node imports are not evidence. Then submit
-`run_proxy_stage.sbatch` as four separate one-node `interactive` jobs with
-`STAGE=import`, `construct`, `fwbw`, and `qat`. Only after all four pass, submit
+three fail-local carriers. `run_rollout_init.sbatch` uses two GPUs to initialize
+only vLLM and emit `K3_ROLLOUT_INIT_OK` after one real generation.
+`run_train_fwbw.sbatch` uses two GPUs at EP2 to initialize only MLite and emit
+`K3_TRAIN_FWDBWD_OK` after checking finite loss plus finite, nonzero gradients.
+Once both Slurm outputs exist, pass them as `ROLLOUT_EVIDENCE` and
+`TRAIN_EVIDENCE` to the one-GPU `run_resync.sbatch`; it exercises VERL's real
+bucket sender/receiver and emits `K3_RESYNC_OK` only after at least two buckets
+finalize with exact target/source equality. Only after all three pass, submit
 `run_proxy_qat_r3.sbatch` for the optimizer-backed RL step. The final job
 enables MLite MXFP4 QAT and R3 router replay, rejects fused routers, and
 requires W&B logging.
