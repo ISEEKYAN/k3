@@ -357,6 +357,7 @@ def finalize_evidence_bundle(
     destination = Path(output)
     entries = []
     commits = set()
+    seen_job_ids = set()
     for run_dir in run_dirs:
         root = Path(run_dir)
         record = _load_run_record(root / "run.json")
@@ -367,6 +368,12 @@ def finalize_evidence_bundle(
             root / "run.json",
             sacct_path,
         )
+        if sacct["job_id"] in seen_job_ids:
+            raise RuntimeError(
+                "one Slurm job cannot certify multiple execution outputs: "
+                f"{sacct['job_id']}"
+            )
+        seen_job_ids.add(sacct["job_id"])
         commits.add(verified["git_commit"])
         entries.append(
             {
@@ -409,6 +416,7 @@ def load_evidence_bundle(path: str | Path) -> VerifiedEvidence:
     capabilities: dict[str, list[str]] = {}
     axes: dict[str, list[str]] = {}
     verified_runs = []
+    seen_job_ids = set()
     for entry in bundle.get("runs", ()):
         record_path = source.parent / entry["record"]
         sacct_path = source.parent / entry["sacct"]
@@ -421,6 +429,12 @@ def load_evidence_bundle(path: str | Path) -> VerifiedEvidence:
             raise RuntimeError("run commit does not match evidence bundle commit")
         if sacct["job_id"] != entry["job_id"]:
             raise RuntimeError("sacct job id does not match evidence bundle")
+        if sacct["job_id"] in seen_job_ids:
+            raise RuntimeError(
+                "one Slurm job cannot certify multiple execution outputs: "
+                f"{sacct['job_id']}"
+            )
+        seen_job_ids.add(sacct["job_id"])
         for cell, assertion in test_report["assertions"]:
             test_source = (
                 f"test:{tier.test_id}::{assertion}#sha256:{record['fingerprint']}"

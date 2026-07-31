@@ -137,6 +137,25 @@ def test_one_run_cannot_claim_multiple_coverage_cells(tmp_path):
         )
 
 
+def test_one_slurm_job_cannot_be_reused_to_claim_multiple_coverage_cells(tmp_path):
+    first_run = _completed_run(
+        tmp_path,
+        assertions=(("router_expert_bias.load", "expert_bias_is_finite_fp32"),),
+    )
+    second_run = _completed_run(
+        tmp_path,
+        tier="checkpoint_gather_2n",
+        assertions=(("moe.export_bf16", "export_matches_baseline"),),
+    )
+
+    with pytest.raises(RuntimeError, match="multiple execution outputs"):
+        finalize_evidence_bundle(
+            [first_run, second_run],
+            tmp_path / "evidence.json",
+            sacct_query=_completed_sacct,
+        )
+
+
 def test_smoke_without_cell_assertions_leaves_the_matrix_uncovered(tmp_path):
     run_dir = _completed_run(tmp_path, assertions=(), axes=("tp",))
     bundle_path = tmp_path / "evidence.json"
