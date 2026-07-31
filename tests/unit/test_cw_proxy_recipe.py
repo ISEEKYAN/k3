@@ -269,7 +269,7 @@ def test_te_audit_uses_node_local_dependencies_and_reports_missing_git():
     assert '"${te_build_source}"' in build
 
 
-def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
+def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_optional_wandb():
     runner = read("run_proxy_qat_r3.sbatch")
 
     assert "#SBATCH --partition=interactive" in runner
@@ -277,7 +277,9 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_wandb():
     assert "#SBATCH --gpus-per-node=8" in runner
     assert "srun \\\n  --account=coreai_devtech_all" in runner
     assert "--no-container-entrypoint" in runner
-    assert 'LOGGER="[console,file,wandb]"' in runner
+    assert 'export LOGGER="${LOGGER:-[console,file]}"' in runner
+    assert 'if [[ "${LOGGER}" == *wandb* ]]; then' in runner
+    assert 'if [[ -n "${wandb_watch_pid}" ]]' in runner
     assert "megatron-core-moe-dev" in runner
     assert "++actor_rollout_ref.actor.engine.impl_cfg.qat.enabled=true" in runner
     assert "++actor_rollout_ref.actor.engine.impl_cfg.qat.format=mxfp4" in runner

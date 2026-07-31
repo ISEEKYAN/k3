@@ -59,7 +59,7 @@ export WANDB_ENTITY="${WANDB_ENTITY:-megatron-core-moe-dev}"
 export WANDB_PROJECT="${WANDB_PROJECT:-k3-proxy-qat-r3}"
 export PROJECT_NAME="${WANDB_PROJECT}"
 export RUN_NAME="${RUN_NAME:-k3-proxy-12l-56e-qat-r3}"
-export LOGGER="[console,file,wandb]"
+export LOGGER="${LOGGER:-[console,file]}"
 export NNODES=1
 export NGPUS_PER_NODE=8
 export MLITE_MODEL_NAME=k3
@@ -129,22 +129,25 @@ python3 "${recipe_dir}/assert_ray_cuda_env.py"
 
 log_file="${OUTPUT_ROOT}/${RUN_NAME}.launcher.log"
 mkdir -p "${OUTPUT_ROOT}"
-(
-  deadline=$((SECONDS + 900))
-  while (( SECONDS < deadline )); do
-    if [[ -f "${log_file}" ]]; then
-      url=$(grep -Eo "https://wandb.ai/[^[:space:]]+/runs/[^[:space:]]+" "${log_file}" | head -1 || true)
-      if [[ -n "${url}" ]]; then
-        echo "K3_WANDB_URL ${url}" | tee "${OUTPUT_ROOT}/wandb-url.txt"
-        exit 0
+wandb_watch_pid=
+if [[ "${LOGGER}" == *wandb* ]]; then
+  (
+    deadline=$((SECONDS + 900))
+    while (( SECONDS < deadline )); do
+      if [[ -f "${log_file}" ]]; then
+        url=$(grep -Eo "https://wandb.ai/[^[:space:]]+/runs/[^[:space:]]+" "${log_file}" | head -1 || true)
+        if [[ -n "${url}" ]]; then
+          echo "K3_WANDB_URL ${url}" | tee "${OUTPUT_ROOT}/wandb-url.txt"
+          exit 0
+        fi
       fi
-    fi
-    sleep 5
-  done
-  echo "FATAL W&B run URL was not observed within 15 minutes" >&2
-  exit 2
-) &
-wandb_watch_pid=$!
+      sleep 5
+    done
+    echo "FATAL W&B run URL was not observed within 15 minutes" >&2
+    exit 2
+  ) &
+  wandb_watch_pid=$!
+fi
 
 set +e
 bash "${MLITE_ROOT}/experimental/lite/examples/verl/scripts/run_qwen3moe_gsm8k_grpo.sh" \
@@ -165,11 +168,13 @@ run_rc=${PIPESTATUS[0]}
 set -e
 
 if (( run_rc != 0 )); then
-  kill "${wandb_watch_pid}" 2>/dev/null || true
-  wait "${wandb_watch_pid}" 2>/dev/null || true
+  if [[ -n "${wandb_watch_pid}" ]]; then
+    kill "${wandb_watch_pid}" 2>/dev/null || true
+    wait "${wandb_watch_pid}" 2>/dev/null || true
+  fi
   exit "${run_rc}"
 fi
-if ! wait "${wandb_watch_pid}"; then
+if [[ -n "${wandb_watch_pid}" ]] && ! wait "${wandb_watch_pid}"; then
   exit 2
 fi
 exit "${run_rc}"
