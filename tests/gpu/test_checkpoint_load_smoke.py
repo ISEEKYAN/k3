@@ -255,7 +255,9 @@ def main() -> None:
         for name, tensor in checkpoint_state
         if name.endswith(".moe.router.expert_bias")
     ]
-    if expert_bias and any(
+    if not expert_bias:
+        raise RuntimeError("K3 checkpoint contains no router expert_bias")
+    if any(
         tensor.dtype != torch.float32 or not torch.isfinite(tensor).all()
         for tensor in expert_bias
     ):
@@ -304,7 +306,7 @@ def main() -> None:
                         manifest.weights.quantized_weights
                         + manifest.weights.plain_tensors
                     ),
-                    "expert_bias_dtype": "torch.float32",
+                    "expert_bias_dtype": str(expert_bias[0].dtype),
                     # This is deliberately one coverage cell per execution output:
                     # the preceding check proves this exact persistent checkpoint
                     # field was restored as finite FP32 state after the QAT load.

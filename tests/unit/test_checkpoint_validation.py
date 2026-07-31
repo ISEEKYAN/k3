@@ -161,6 +161,18 @@ def test_capability_matrix_derives_only_the_explicitly_evidenced_cell():
     }
 
 
+def test_router_expert_bias_smoke_requires_a_real_bias_and_reports_its_dtype():
+    source = (
+        Path(__file__).parents[2] / "tests/gpu/test_checkpoint_load_smoke.py"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        'raise RuntimeError("K3 checkpoint contains no router expert_bias")' in source
+    )
+    assert '"expert_bias_dtype": str(expert_bias[0].dtype)' in source
+    assert '"expert_bias_dtype": "torch.float32"' not in source
+
+
 @pytest.mark.parametrize(
     "evidence",
     (
