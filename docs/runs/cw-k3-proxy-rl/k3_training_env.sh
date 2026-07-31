@@ -87,9 +87,22 @@ unset \
   CC CXX CFLAGS CPPFLAGS CXXFLAGS LDFLAGS
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
+export CPATH=/usr/include/x86_64-linux-gnu
 export CUDA_HOME=/usr/local/cuda
 export PATH="/usr/local/bin:/usr/bin:/bin:${CUDA_HOME}/bin"
 export LD_LIBRARY_PATH="/usr/local/cuda/compat/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+compiler_path=$(command -v gcc)
+if [[ "${CC}" != /usr/bin/gcc || "${CXX}" != /usr/bin/g++ || "${compiler_path}" != /usr/bin/gcc ]]; then
+  echo "FATAL invalid training compiler CC=${CC} CXX=${CXX} gcc=${compiler_path}" >&2
+  exit 2
+fi
+case "${CC}:${CXX}:${compiler_path}" in
+  *miniforge*|*conda*)
+    echo "FATAL host compiler leaked into training container" >&2
+    exit 2
+    ;;
+esac
+echo "K3_TRAIN_TOOLCHAIN_OK CC=${CC} CXX=${CXX} gcc=${compiler_path}" >&2
 export MLITE_K3_AUTO_REGISTER=1
 export PYTHONPATH="${VERL_ROOT}:${VLLM_SITE}:${VERL_PRUNED_SITE}:${FLA_SITE}:${CUTLASS_DSL_SITE}:${recipe_dir}:${K3_ROOT}/src:${MEGATRON_ROOT}:${MLITE_ROOT}/experimental/lite/examples/verl:${MLITE_ROOT}/experimental/lite:/vllm"
 

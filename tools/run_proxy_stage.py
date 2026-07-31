@@ -7,6 +7,7 @@ import argparse
 import datetime
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import torch
@@ -68,19 +69,43 @@ def _logical_numel(model: torch.nn.Module, device: torch.device) -> dict[str, in
     }
 
 
+def _select_trainable_parameters(
+    model: torch.nn.Module,
+    requested_names: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Freeze parameter gradients except for an explicit end-to-end probe."""
+    requested = frozenset(requested_names)
+    matched: list[str] = []
+    for name, parameter in model.named_parameters():
+        parameter.requires_grad_(name in requested)
+        if name in requested:
+            matched.append(name)
+    missing = requested.difference(matched)
+    if missing:
+        raise RuntimeError(f"unknown trainable parameter probe: {sorted(missing)}")
+    if not matched:
+        raise RuntimeError("trainable parameter probe cannot be empty")
+    return tuple(matched)
+
+
 @record
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage", choices=("construct", "fwbw", "qat"), required=True)
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--sequence-length", type=int, default=16)
+    parser.add_argument("--success-marker", default="K3_PROXY_STAGE_OK")
+    parser.add_argument("--trainable-parameter", action="append", default=[])
+    parser.add_argument("--result-path")
     args = parser.parse_args()
 
     dist.init_process_group("nccl")
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    if world_size != 8:
-        raise RuntimeError(f"K3 proxy stages require exactly 8 ranks, got {world_size}")
+    if 56 % world_size != 0:
+        raise RuntimeError(
+            f"K3 proxy experts require an EP divisor of 56, got {world_size}"
+        )
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
@@ -96,7 +121,7 @@ def main() -> None:
     bundle = build_model(
         config,
         impl_cfg=ImplConfig(
-            parallel=ParallelConfig(tp=1, ep=8, etp=1, pp=1, cp=1),
+            parallel=ParallelConfig(tp=1, ep=world_size, etp=1, pp=1, cp=1),
             device=f"cuda:{local_rank}",
             dtype="bfloat16",
             qat={
@@ -108,6 +133,12 @@ def main() -> None:
         ),
     )
     model = bundle.chunks[0].train()
+    trainable_parameters: tuple[str, ...] | None = None
+    if args.trainable_parameter:
+        trainable_parameters = _select_trainable_parameters(
+            model,
+            tuple(args.trainable_parameter),
+        )
     _mark(rank, "build_done")
     if any(getattr(module, "moe_router_fusion", False) for module in model.modules()):
         raise RuntimeError("R3 carrier found a fused router")
@@ -123,6 +154,13 @@ def main() -> None:
         "qat_modules": bundle.extras["qat"]["quantized_modules"],
         "moe_router_fusion": False,
     }
+    if trainable_parameters is not None:
+        result["trainable_parameters"] = trainable_parameters
+        result["trainable_numel"] = sum(
+            parameter.numel()
+            for name, parameter in model.named_parameters()
+            if name in trainable_parameters
+        )
 
     if args.stage != "construct":
         tokens = (
@@ -142,6 +180,16 @@ def main() -> None:
         _mark(rank, "backward_start")
         loss.backward()
         _mark(rank, "backward_done")
+        unexpected_gradients = [
+            name
+            for name, parameter in model.named_parameters()
+            if not parameter.requires_grad and parameter.grad is not None
+        ]
+        if unexpected_gradients:
+            raise RuntimeError(
+                "unexpected gradients outside the trainable probe: "
+                f"{unexpected_gradients}"
+            )
         finite_grads = all(
             parameter.grad is None or torch.isfinite(parameter.grad).all()
             for parameter in model.parameters()
@@ -151,11 +199,25 @@ def main() -> None:
                 f"non-finite proxy step loss={float(loss.detach())} "
                 f"finite_grads={finite_grads}"
             )
+        gradient_abs_sum = torch.zeros((), device=device, dtype=torch.float64)
+        for parameter in model.parameters():
+            if parameter.grad is not None:
+                gradient_abs_sum += parameter.grad.detach().double().abs().sum()
+        dist.all_reduce(gradient_abs_sum)
+        if not torch.isfinite(gradient_abs_sum) or gradient_abs_sum <= 0:
+            raise RuntimeError(f"non-positive gradient sum: {float(gradient_abs_sum)}")
         result["loss"] = float(loss.detach())
         result["finite_grads"] = finite_grads
+        result["gradient_abs_sum"] = float(gradient_abs_sum)
 
     if rank == 0:
-        print("K3_PROXY_STAGE_OK=" + json.dumps(result, sort_keys=True), flush=True)
+        payload = json.dumps(result, sort_keys=True)
+        if args.result_path:
+            Path(args.result_path).write_text(payload + "\n")
+        print(
+            args.success_marker + "=" + payload,
+            flush=True,
+        )
     dist.destroy_process_group()
 
 

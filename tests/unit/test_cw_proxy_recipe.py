@@ -30,6 +30,7 @@ def test_active_runtime_recipes_reuse_the_proven_training_base():
     for name in (
         "run_proxy_generate.sbatch",
         "run_proxy_qat_r3.sbatch",
+        "run_train_fwbw.sbatch",
         "run_proxy_stage.sbatch",
     ):
         assert '--container-image="${K3_TRAINING_IMAGE}"' in read(name)
@@ -61,6 +62,11 @@ def test_training_environment_preserves_three_pollution_boundaries():
         in env
     )
     assert "CC=/usr/bin/gcc" in env
+    assert "CXX=/usr/bin/g++" in env
+    assert "CPATH=/usr/include/x86_64-linux-gnu" in env
+    assert "compiler_path=$(command -v gcc)" in env
+    assert "*miniforge*|*conda*" in env
+    assert "K3_TRAIN_TOOLCHAIN_OK" in env
     assert "PYTHONNOUSERSITE=1" in env
     assert "OMP_NUM_THREADS=1" in env
     assert "VLLM_SITE:=${K3_VLLM_SITE}" in env
@@ -568,6 +574,51 @@ def test_proxy_generate_reuses_external_launcher_at_tp8():
     assert "def _warm_recurrent_kda(" in warmup
     assert "def kimi_k3_triton_warmup(" in warmup
     assert "K3_PROXY_GENERATE_OK" in driver
+
+
+def test_training_fwbw_carrier_uses_two_gpu_ep_and_checks_nonzero_gradients():
+    carrier = read("run_train_fwbw.sbatch")
+    runner = (ROOT / "tools/run_proxy_stage.py").read_text()
+
+    assert "#SBATCH --gpus-per-node=2" in carrier
+    assert "--nproc-per-node=2" in carrier
+    assert ': "${OUTPUT_ROOT:?' in carrier
+    assert "--stage fwbw" in carrier
+    assert "--trainable-parameter layers.0.input_layernorm.weight" in carrier
+    assert "--success-marker K3_TRAIN_FWDBWD_OK" in carrier
+    assert "ParallelConfig(tp=1, ep=world_size" in runner
+    assert "def _select_trainable_parameters(" in runner
+    assert "parameter.requires_grad_(name in requested)" in runner
+    assert "trainable_parameters" in runner
+    assert "unexpected gradients outside the trainable probe" in runner
+    assert "gradient_abs_sum" in runner
+    assert "non-positive gradient sum" in runner
+
+
+def test_trainable_probe_freezes_every_unselected_parameter():
+    import importlib.util
+
+    import pytest
+    import torch
+
+    module_path = ROOT / "tools/run_proxy_stage.py"
+    spec = importlib.util.spec_from_file_location("run_proxy_stage", module_path)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    model = torch.nn.Sequential(
+        torch.nn.Linear(4, 4, bias=False),
+        torch.nn.Linear(4, 2, bias=False),
+    )
+    selected = runner._select_trainable_parameters(model, ("0.weight",))
+
+    assert selected == ("0.weight",)
+    assert {
+        name: parameter.requires_grad for name, parameter in model.named_parameters()
+    } == {"0.weight": True, "1.weight": False}
+    with pytest.raises(RuntimeError, match="unknown trainable parameter probe"):
+        runner._select_trainable_parameters(model, ("missing.weight",))
 
 
 def test_kda_backward_probe_is_one_gpu_and_uses_production_shape():
