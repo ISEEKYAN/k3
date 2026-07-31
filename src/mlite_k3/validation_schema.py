@@ -19,7 +19,10 @@ STRUCTURES = (
     "router_expert_bias",
 )
 VALIDATION_AXES = ("tp", "ep", "etp", "pp", "cp", "thd")
-_EVIDENCE_SOURCE = re.compile(r"(?:test:[^#\s]+|job:\d+)#sha256:[0-9a-f]{64}\Z")
+_EVIDENCE_SOURCE = re.compile(
+    r"(?:test:[^#\s]+::[a-z][a-z0-9_]*|"
+    r"job:\d+:assertion:[a-z][a-z0-9_]*)#sha256:[0-9a-f]{64}\Z"
+)
 
 
 def capability_cells() -> tuple[str, ...]:

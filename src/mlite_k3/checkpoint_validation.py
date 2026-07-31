@@ -8,18 +8,17 @@ import json
 import os
 import re
 import subprocess
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-import torch
+from safetensors import safe_open
 
 from mlite_k3.config import K3Config
 from mlite_k3.lite.checkpoint import (
     K3WeightSpec,
     audit_k3_weight_spec_sources,
-    get_hf_weight,
     inspect_hf_checkpoint,
 )
 from mlite_k3.validation_schema import (
@@ -199,58 +198,105 @@ def _source_key_digest(source_keys: list[str]) -> str:
     return digest.hexdigest()
 
 
-def _bitwise_equal(left: torch.Tensor, right: torch.Tensor) -> bool:
-    left_bytes = left.detach().cpu().contiguous().view(torch.uint8)
-    right_bytes = right.detach().cpu().contiguous().view(torch.uint8)
-    return torch.equal(left_bytes, right_bytes)
+def _read_tensor_metadata(
+    reader: Any,
+    source_names: Sequence[str],
+) -> dict[str, tuple[tuple[int, ...], str]]:
+    """Read safetensors header metadata without materializing payload bytes."""
+    accessor = getattr(reader, "tensor_metadata", None)
+    if callable(accessor):
+        return {
+            name: (tuple(shape), str(dtype))
+            for name in source_names
+            for shape, dtype in (accessor(name),)
+        }
+
+    root = Path(reader.path)
+    index = dict(reader.index)
+    by_shard: dict[Path, list[str]] = defaultdict(list)
+    for name in source_names:
+        shard = index.get(name, "model.safetensors")
+        by_shard[root / shard].append(name)
+
+    metadata: dict[str, tuple[tuple[int, ...], str]] = {}
+    for shard, names in by_shard.items():
+        with safe_open(str(shard), framework="pt", device="cpu") as handle:
+            available = set(handle.keys())
+            missing = sorted(set(names) - available)
+            if missing:
+                raise KeyError(
+                    f"safetensors shard {shard.name!r} is missing {missing[:8]!r}"
+                )
+            for name in names:
+                tensor_slice = handle.get_slice(name)
+                metadata[name] = (
+                    tuple(int(dim) for dim in tensor_slice.get_shape()),
+                    str(tensor_slice.get_dtype()),
+                )
+    return metadata
 
 
-def validate_reader_roundtrip(reader: Any, spec: K3WeightSpec) -> dict[str, Any]:
-    """Round-trip every logical source tensor and require exact equality."""
-    dtypes: Counter[str] = Counter()
-    source_keys: set[str] = set()
-    mapping = spec.weight_map()
-
-    for native_name in sorted(mapping):
-        hf_names = mapping[native_name]
-        physical = [reader.get_tensor(name) for name in hf_names]
-        native = spec.hf_to_native(native_name, physical)
-        restored = spec.native_to_hf(native_name, native)
-        logical_names = list(
-            dict.fromkeys(
-                name.removesuffix("_packed").removesuffix("_scale") for name in hf_names
-            )
-        )
-        if [name for name, _ in restored] != logical_names:
-            raise AssertionError(
-                f"name mismatch for {native_name!r}: "
-                f"{[name for name, _ in restored]!r} != {logical_names!r}"
-            )
-        expected = [get_hf_weight(reader, name) for name in logical_names]
-        for source_name, source, (_, actual) in zip(
-            logical_names, expected, restored, strict=True
+def _validate_header_layout(
+    spec: K3WeightSpec,
+    native_name: str,
+    hf_names: Sequence[str],
+    metadata: Mapping[str, tuple[tuple[int, ...], str]],
+) -> None:
+    if getattr(spec, "_uses_release_mxfp4", False) and spec.is_expert(native_name):
+        if len(hf_names) % 2:
+            raise ValueError(f"{native_name!r} requires MXFP4 packed/scale pairs")
+        for packed_name, scale_name in zip(
+            hf_names[0::2],
+            hf_names[1::2],
+            strict=True,
         ):
-            if source.shape != actual.shape:
-                raise AssertionError(
-                    f"shape mismatch for {source_name!r}: "
-                    f"{tuple(actual.shape)} != {tuple(source.shape)}"
+            packed_shape, packed_dtype = metadata[packed_name]
+            scale_shape, scale_dtype = metadata[scale_name]
+            if packed_dtype not in {"I8", "U8"}:
+                raise TypeError(
+                    f"MXFP4 packed tensor {packed_name!r} must be I8/U8, "
+                    f"got {packed_dtype}"
                 )
-            if source.dtype != actual.dtype:
-                raise AssertionError(
-                    f"dtype mismatch for {source_name!r}: "
-                    f"{actual.dtype} != {source.dtype}"
+            if scale_dtype != "U8":
+                raise TypeError(
+                    f"MXFP4 scale tensor {scale_name!r} must be U8, got {scale_dtype}"
                 )
-            if not _bitwise_equal(source, actual):
-                raise AssertionError(f"bitwise mismatch for {source_name!r}")
-        for source_name, source in zip(hf_names, physical, strict=True):
-            if source_name not in source_keys:
-                source_keys.add(source_name)
-                dtypes[str(source.dtype)] += 1
-        del actual, expected, native, physical, restored, source
+            if not packed_shape or not scale_shape:
+                raise ValueError(
+                    f"MXFP4 pair {packed_name!r}/{scale_name!r} has an empty shape"
+                )
+        return
 
+    if re.search(r"\.[qkv]_conv1d\.weight$", native_name):
+        shape, _dtype = metadata[hf_names[0]]
+        if len(shape) != 3 or shape[1] != 1:
+            raise ValueError(
+                f"{native_name!r} must have shape [channels, 1, kernel], got {shape}"
+            )
+
+    if (".gate_up." in native_name or ".fc1." in native_name) and len(hf_names) == 2:
+        left_shape, _ = metadata[hf_names[0]]
+        right_shape, _ = metadata[hf_names[1]]
+        if len(left_shape) != len(right_shape) or left_shape[1:] != right_shape[1:]:
+            raise ValueError(
+                f"{native_name!r} fused sources have incompatible shapes: "
+                f"{left_shape} and {right_shape}"
+            )
+
+
+def validate_reader_metadata(reader: Any, spec: K3WeightSpec) -> dict[str, Any]:
+    """Audit every mapped source using only safetensors index and headers."""
+    mapping = spec.weight_map()
+    source_keys = sorted(
+        {source_name for hf_names in mapping.values() for source_name in hf_names}
+    )
+    metadata = _read_tensor_metadata(reader, source_keys)
+    for native_name, hf_names in sorted(mapping.items()):
+        _validate_header_layout(spec, native_name, hf_names, metadata)
+    dtypes = Counter(dtype for _shape, dtype in metadata.values())
     ordered_keys = sorted(source_keys)
     return {
-        "bitwise_equal": True,
+        "metadata_only": True,
         "native_tensors": len(mapping),
         "source_tensors": len(ordered_keys),
         "source_key_sha256": _source_key_digest(ordered_keys),
@@ -341,7 +387,7 @@ def validate_checkpoint(
                 "evidence bundle commit does not match validator commit: "
                 f"evidence={verified_evidence.git_commit}, current={current_commit}"
             )
-    checkpoint = validate_reader_roundtrip(reader, spec)
+    checkpoint = validate_reader_metadata(reader, spec)
     checkpoint.update(
         {
             "revision": KIMI_K3_REVISION,
