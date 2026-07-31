@@ -46,7 +46,8 @@ vllm_patches=(
   "${recipe_dir}/vllm-moe-sum-abi.patch"
 )
 for vllm_patch in "${vllm_patches[@]}"; do
-  if ! patch --dry-run --silent --reverse -p1 -d "${VLLM_SITE}" <"${vllm_patch}"; then
+  if ! patch --batch --reverse --force --dry-run --silent -p1 \
+    -d "${VLLM_SITE}" <"${vllm_patch}"; then
     echo "FATAL K3 vLLM overlay patch is not applied: ${vllm_patch}" >&2
     exit 2
   fi

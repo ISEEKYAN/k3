@@ -21,9 +21,10 @@ if [[ ! -d "${K3_VLLM_SITE}/vllm" ]]; then
 fi
 
 for patch_file in "${patch_files[@]}"; do
-  if patch --dry-run --silent -p1 -d "${K3_VLLM_SITE}" <"${patch_file}"; then
-    patch --silent -p1 -d "${K3_VLLM_SITE}" <"${patch_file}"
-  elif ! patch --dry-run --silent --reverse -p1 -d "${K3_VLLM_SITE}" <"${patch_file}"; then
+  if patch --batch --forward --dry-run --silent -p1 -d "${K3_VLLM_SITE}" <"${patch_file}"; then
+    patch --batch --forward --silent -p1 -d "${K3_VLLM_SITE}" <"${patch_file}"
+  elif ! patch --batch --reverse --force --dry-run --silent -p1 \
+    -d "${K3_VLLM_SITE}" <"${patch_file}"; then
     echo "FATAL K3 vLLM overlay is neither clean nor exactly patched: ${patch_file}" >&2
     exit 2
   fi

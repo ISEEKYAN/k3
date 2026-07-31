@@ -1,10 +1,7 @@
 diff --git a/vllm/_custom_ops.py b/vllm/_custom_ops.py
 --- a/vllm/_custom_ops.py
 +++ b/vllm/_custom_ops.py
-@@ -2231,4 +2231,7 @@ def moe_sum(
-     topk_ids: torch.Tensor | None = None,
-     expert_map: torch.Tensor | None = None,
- ):
+@@ -2234 +2234,4 @@ def moe_sum(
 -    torch.ops._moe_C.moe_sum(input, output, topk_ids, expert_map)
 +    if topk_ids is None and expert_map is None:
 +        torch.ops._moe_C.moe_sum(input, output)
