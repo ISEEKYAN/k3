@@ -13,6 +13,7 @@ patch_files=(
   "${recipe_dir}/vllm-routed-expert-topk-alias.patch"
   "${recipe_dir}/vllm-k3-warmup-import.patch"
   "${recipe_dir}/vllm-optional-router-warmup.patch"
+  "${recipe_dir}/vllm-k3-runtime-capabilities.patch"
 )
 
 if [[ ! -e "${K3_VLLM_OVERLAY}" ]]; then
@@ -36,7 +37,9 @@ done
 python3 -m py_compile \
   "${K3_VLLM_SITE}/vllm/_custom_ops.py" \
   "${K3_VLLM_SITE}/vllm/models/kimi_k3/nvidia/model.py" \
+  "${K3_VLLM_SITE}/vllm/models/kimi_k3/nvidia/kda.py" \
   "${K3_VLLM_SITE}/vllm/model_executor/kernels/linear/cute_dsl/ll_bf16.py" \
   "${K3_VLLM_SITE}/vllm/model_executor/warmup/kernel_warmup.py" \
+  "${K3_VLLM_SITE}/vllm/v1/attention/backends/mla/flashattn_mla.py" \
   "${recipe_dir}/k3_vllm_warmup.py"
 echo "K3_VLLM_OVERLAY_READY"

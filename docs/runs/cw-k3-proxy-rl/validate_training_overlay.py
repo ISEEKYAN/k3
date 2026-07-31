@@ -21,6 +21,8 @@ import cutlass.cute
 import megatron.core
 import megatron.lite
 import torch
+from vllm.models.kimi_k3.nvidia.kda import is_flashkda_supported
+from vllm.v1.attention.backends.mla.flashattn_mla import normalize_cp_world_size
 from verl.workers.rollout.vllm_rollout.utils import vLLMColocateWorkerExtension
 
 
@@ -118,6 +120,8 @@ assert _under(vllm.__file__, os.environ["VLLM_SITE"]), vllm.__file__
 assert kernel_warmup.kimi_k3_triton_warmup is kimi_k3_triton_warmup
 kernel_warmup._warmup_ll_bf16_router_gemm(object())
 assert not is_ll_bf16_gemm_available()
+assert "import vllm._flashkda_C" in inspect.getsource(is_flashkda_supported)
+assert [normalize_cp_world_size(value) for value in (-1, 0, 1, 2)] == [1, 1, 1, 2]
 assert _under(fla.__file__, os.environ["FLA_SITE"]), fla.__file__
 assert _under(cutlass.cute.__file__, os.environ["CUTLASS_DSL_SITE"]), (
     cutlass.cute.__file__
@@ -153,6 +157,8 @@ result = {
     "megatron_lite": megatron.lite.__file__,
     "megatron_lite_version": os.environ["MLITE_SOURCE_SHA"],
     "mxfp4_layerwise_bucket_transaction": True,
+    "kda_triton_fallback_contract": True,
+    "fa3_cp_off_contract": True,
     "te_rmsnorm": te.RMSNorm.__name__,
     "transformer_engine_file": transformer_engine.__file__,
 }

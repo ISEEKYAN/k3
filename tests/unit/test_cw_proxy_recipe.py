@@ -17,7 +17,7 @@ def test_image_contract_reuses_the_proven_k3_vllm_overlay():
     assert "K3_VLLM_OVERLAY_SOURCE=" in image
     assert "K3_VLLM_OVERLAY=" in image
     assert "k3-vllm-main-prs-overlay" in image
-    assert "k3-vllm-overlay-r2" in image
+    assert "k3-vllm-overlay-r3" in image
     assert 'K3_VLLM_SITE="${K3_VLLM_OVERLAY}/lib/python3.12/site-packages"' in image
     assert "qwen35-cp-overlay-20260613/site" in image
     assert "nvidia_cutlass_dsl/python_packages" in image
@@ -154,6 +154,7 @@ def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     expert_alias_patch = read("vllm-routed-expert-topk-alias.patch")
     warmup_import_patch = read("vllm-k3-warmup-import.patch")
     optional_warmup_patch = read("vllm-optional-router-warmup.patch")
+    runtime_capabilities_patch = read("vllm-k3-runtime-capabilities.patch")
     env = read("k3_training_env.sh")
 
     assert "_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD = 256" in patch_text
@@ -164,6 +165,7 @@ def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     assert '"${recipe_dir}/vllm-routed-expert-topk-alias.patch"' in prepare
     assert '"${recipe_dir}/vllm-k3-warmup-import.patch"' in prepare
     assert '"${recipe_dir}/vllm-optional-router-warmup.patch"' in prepare
+    assert '"${recipe_dir}/vllm-k3-runtime-capabilities.patch"' in prepare
     assert "patch --batch --forward --dry-run --silent" in prepare
     assert "if topk_ids is None and expert_map is None:" in moe_abi_patch
     assert "torch.ops._moe_C.moe_sum(input, output)" in moe_abi_patch
@@ -175,10 +177,17 @@ def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     assert "Skipping ll_bf16 router GEMM warmup: quack is unavailable." in (
         optional_warmup_patch
     )
+    assert "import vllm._flashkda_C" in runtime_capabilities_patch
+    assert "statically_supported" in runtime_capabilities_patch
+    assert "def normalize_cp_world_size" in runtime_capabilities_patch
+    assert "normalize_cp_world_size(self.dcp_world_size)" in (
+        runtime_capabilities_patch
+    )
     assert 'for vllm_patch in "${vllm_patches[@]}"' in env
     assert '"${recipe_dir}/vllm-routed-expert-topk-alias.patch"' in env
     assert '"${recipe_dir}/vllm-k3-warmup-import.patch"' in env
     assert '"${recipe_dir}/vllm-optional-router-warmup.patch"' in env
+    assert '"${recipe_dir}/vllm-k3-runtime-capabilities.patch"' in env
     assert "patch --batch --reverse --force --dry-run --silent" in env
     assert 'mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)' in env
 

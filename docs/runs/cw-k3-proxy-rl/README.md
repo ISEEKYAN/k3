@@ -78,3 +78,8 @@ bucket. A rollout created with vLLM's `dummy` loader has no startup checkpoint
 applications from which vLLM can record a reload contract. Only for that
 explicit load format, the finalizer accepts the complete actor update without a
 startup-contract comparison; real-checkpoint startup remains fail-closed.
+
+The private vLLM overlay also keeps optional acceleration paths honest. FlashKDA
+is selected only when its compiled extension is importable; otherwise vLLM's
+existing Triton KDA backend handles prefill. The FA3 MLA adapter maps vLLM's
+CP-off sentinel to FA3's single-rank ABI value before calling the kernel.

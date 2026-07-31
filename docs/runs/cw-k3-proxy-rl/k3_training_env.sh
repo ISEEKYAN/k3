@@ -58,6 +58,7 @@ vllm_patches=(
   "${recipe_dir}/vllm-routed-expert-topk-alias.patch"
   "${recipe_dir}/vllm-k3-warmup-import.patch"
   "${recipe_dir}/vllm-optional-router-warmup.patch"
+  "${recipe_dir}/vllm-k3-runtime-capabilities.patch"
 )
 for vllm_patch in "${vllm_patches[@]}"; do
   if ! patch --batch --reverse --force --dry-run --silent -p1 \
