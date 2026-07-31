@@ -506,6 +506,34 @@ def test_k3_weight_spec_reshapes_release_dt_bias():
     assert torch.equal(native.flatten(), flattened)
 
 
+def test_k3_weight_spec_restores_release_kda_layouts_on_export():
+    spec = K3WeightSpec(_TinyConfig())
+    a_log = torch.arange(spec.config.kda_num_heads, dtype=torch.float32)
+    dt_bias = torch.arange(
+        spec.config.kda_num_heads * spec.config.kda_head_dim,
+        dtype=torch.float32,
+    ).reshape(spec.config.kda_num_heads, spec.config.kda_head_dim)
+
+    [(a_log_name, exported_a_log)] = spec.native_to_hf(
+        "layers.0.self_attention.A_log",
+        a_log,
+    )
+    [(dt_bias_name, exported_dt_bias)] = spec.native_to_hf(
+        "layers.0.self_attention.dt_bias",
+        dt_bias,
+    )
+
+    assert a_log_name.endswith(".self_attn.A_log")
+    assert exported_a_log.shape == (128,)
+    assert torch.equal(exported_a_log[: spec.config.kda_num_heads], a_log)
+    assert torch.count_nonzero(exported_a_log[spec.config.kda_num_heads :]) == 0
+    assert dt_bias_name.endswith(".self_attn.dt_bias")
+    assert exported_dt_bias.shape == (
+        spec.config.kda_num_heads * spec.config.kda_head_dim,
+    )
+    assert torch.equal(exported_dt_bias, dt_bias.flatten())
+
+
 def test_k3_weight_spec_rejects_wrong_dt_bias_size():
     spec = K3WeightSpec(_TinyConfig())
     wrong = torch.zeros(spec.config.kda_num_heads * spec.config.kda_head_dim + 1)

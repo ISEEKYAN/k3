@@ -308,7 +308,29 @@ class K3WeightSpec:
                 name.removesuffix("_packed").removesuffix("_scale") for name in names
             )
         )
-        if ".gate_up." in native_name or ".fc1." in native_name:
+        if native_name.endswith(".self_attention.A_log"):
+            heads = int(self.config.kda_num_heads)
+            if tensor.numel() != heads:
+                raise ValueError(
+                    f"{native_name!r} must contain exactly {heads} active heads, "
+                    f"got shape {tuple(tensor.shape)}"
+                )
+            padded_heads = ((heads + 127) // 128) * 128
+            tensor = torch.nn.functional.pad(
+                tensor.reshape(-1),
+                (0, padded_heads - heads),
+            )
+            parts = (tensor,)
+        elif native_name.endswith(".self_attention.dt_bias"):
+            heads = int(self.config.kda_num_heads)
+            head_dim = int(self.config.kda_head_dim)
+            if tuple(tensor.shape) != (heads, head_dim):
+                raise ValueError(
+                    f"{native_name!r} must have shape {(heads, head_dim)}, "
+                    f"got {tuple(tensor.shape)}"
+                )
+            parts = (tensor.reshape(-1).contiguous(),)
+        elif ".gate_up." in native_name or ".fc1." in native_name:
             parts = tensor.chunk(2, dim=0)
         elif re.search(r"\.[qkv]_conv1d\.weight$", native_name):
             if tensor.ndim != 3 or tensor.size(1) != 1:
