@@ -266,7 +266,7 @@ class K3WeightSpec:
             return torch.cat(hf_tensors, dim=0).contiguous()
         tensor = hf_tensors[0]
         if native_name.endswith(".self_attention.A_log"):
-            heads = int(self.config.kda_num_heads)
+            heads = int(getattr(self.config, "kda_num_heads", tensor.numel()))
             if tensor.ndim != 1 or tensor.numel() < heads:
                 raise ValueError(
                     f"{native_name!r} must contain at least {heads} KDA heads, "
@@ -280,6 +280,10 @@ class K3WeightSpec:
                 )
             tensor = tensor[:heads]
         elif native_name.endswith(".self_attention.dt_bias"):
+            if not all(
+                hasattr(self.config, name) for name in ("kda_num_heads", "kda_head_dim")
+            ):
+                return tensor
             heads = int(self.config.kda_num_heads)
             head_dim = int(self.config.kda_head_dim)
             expected = heads * head_dim
@@ -309,6 +313,8 @@ class K3WeightSpec:
             )
         )
         if native_name.endswith(".self_attention.A_log"):
+            if not hasattr(self.config, "kda_num_heads"):
+                return list(zip(names, (tensor,), strict=True))
             heads = int(self.config.kda_num_heads)
             if tensor.numel() != heads:
                 raise ValueError(
@@ -322,6 +328,10 @@ class K3WeightSpec:
             )
             parts = (tensor,)
         elif native_name.endswith(".self_attention.dt_bias"):
+            if not all(
+                hasattr(self.config, name) for name in ("kda_num_heads", "kda_head_dim")
+            ):
+                return list(zip(names, (tensor,), strict=True))
             heads = int(self.config.kda_num_heads)
             head_dim = int(self.config.kda_head_dim)
             if tuple(tensor.shape) != (heads, head_dim):

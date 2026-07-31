@@ -47,8 +47,8 @@ def test_qat_recipe_disables_cudagraph_capture_while_using_k3_aux_streams():
         in recipe
     )
     assert (
-        '+actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.'
-        'cudagraph_mode=NONE'
+        "+actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config."
+        "cudagraph_mode=NONE"
     ) in recipe
 
 
@@ -137,6 +137,8 @@ def test_k3_verl_overlay_wraps_all_mxfp4_buckets_in_one_reload_transaction():
     assert patch.index("initialize_layerwise_reload") < patch.index(
         "finalize_layerwise_reload"
     )
+    assert 'getattr(load_format, "value", load_format) == "dummy"' in patch
+    assert "fail_on_incomplete=not is_dummy_load" in patch
     assert "finalize_layerwise_reload" in patch
     assert "layerwise reload transaction initialized" in patch
     assert "layerwise reload transaction finalized" in patch
@@ -167,10 +169,7 @@ def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     assert "torch.ops._moe_C.moe_sum(input, output)" in moe_abi_patch
     assert '"num_experts_per_token"' in expert_alias_patch
     assert "num_experts_per_tok," in expert_alias_patch
-    assert (
-        "from k3_vllm_warmup import kimi_k3_triton_warmup"
-        in warmup_import_patch
-    )
+    assert "from k3_vllm_warmup import kimi_k3_triton_warmup" in warmup_import_patch
     assert 'find_spec("quack") is None' in optional_warmup_patch
     assert "Skipping ll_bf16 router GEMM warmup: quack is unavailable." in (
         optional_warmup_patch
@@ -197,6 +196,7 @@ def test_overlay_validation_is_inside_srun():
     assert "kernel_warmup.kimi_k3_triton_warmup is kimi_k3_triton_warmup" in validation
     assert "kernel_warmup._warmup_ll_bf16_router_gemm(object())" in validation
     assert "_validate_layerwise_bucket_transaction" in validation
+    assert "_validate_dummy_start_layerwise_bucket_transaction" in validation
     assert "initialize_layerwise_reload" in validation
     assert "finalize_layerwise_reload" in validation
     assert "receiver.receive_weights" in validation

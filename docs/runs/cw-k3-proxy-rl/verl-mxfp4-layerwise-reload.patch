@@ -33,7 +33,7 @@ index 2e5d31f..591736c 100644
          elif peft_config and base_sync_done:
              # In async mode, make sure the old lora is removed before adding the new one
              # TODO: this is buggy if lora span multiple buckets.
-@@ -296,6 +306,16 @@ class WorkerExtension:
+@@ -296,6 +306,22 @@ class WorkerExtension:
  
              modelopt_process_weights_after_loading(self.model_runner.model)
              logger.info("ModelOpt QAT: process_weights_after_loading completed")
@@ -42,8 +42,14 @@ index 2e5d31f..591736c 100644
 +                finalize_layerwise_reload,
 +            )
 +
++            load_format = self.model_runner.vllm_config.load_config.load_format
++            is_dummy_load = getattr(load_format, "value", load_format) == "dummy"
 +            for model, model_config in self._iter_all_models_with_config():
-+                finalize_layerwise_reload(model, model_config)
++                finalize_layerwise_reload(
++                    model,
++                    model_config,
++                    fail_on_incomplete=not is_dummy_load,
++                )
 +            logger.info(
 +                "MXFP4 QAT: layerwise reload transaction finalized"
 +            )

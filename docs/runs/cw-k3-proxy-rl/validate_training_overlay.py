@@ -72,13 +72,52 @@ def _validate_layerwise_bucket_transaction() -> None:
     assert torch.equal(model.right, torch.tensor([7.0, 8.0]))
 
 
+def _validate_dummy_start_layerwise_bucket_transaction() -> None:
+    from vllm.model_executor.model_loader.reload import (
+        finalize_layerwise_reload,
+        initialize_layerwise_reload,
+        record_metadata_for_reloading,
+    )
+
+    class TwoTensorModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.left = torch.nn.Parameter(torch.zeros(2), requires_grad=False)
+            self.right = torch.nn.Parameter(torch.zeros(2), requires_grad=False)
+            self.left.weight_loader = self._load
+            self.right.weight_loader = self._load
+
+        @staticmethod
+        def _load(param, weight):
+            param.data.copy_(weight)
+
+        def load_weights(self, weights):
+            for name, weight in weights:
+                param = self.get_parameter(name)
+                param.weight_loader(param, weight)
+
+    model = TwoTensorModel()
+    record_metadata_for_reloading(model)
+    initialize_layerwise_reload(model)
+    model.load_weights((("left", torch.tensor([5.0, 6.0])),))
+    model.load_weights((("right", torch.tensor([7.0, 8.0])),))
+    finalize_layerwise_reload(
+        model,
+        SimpleNamespace(dtype=torch.float32),
+        fail_on_incomplete=False,
+    )
+
+    assert torch.equal(model.left, torch.tensor([5.0, 6.0]))
+    assert torch.equal(model.right, torch.tensor([7.0, 8.0]))
+
+
 assert _under(vllm.__file__, os.environ["VLLM_SITE"]), vllm.__file__
 assert kernel_warmup.kimi_k3_triton_warmup is kimi_k3_triton_warmup
 kernel_warmup._warmup_ll_bf16_router_gemm(object())
 assert _under(fla.__file__, os.environ["FLA_SITE"]), fla.__file__
-assert _under(
-    cutlass.cute.__file__, os.environ["CUTLASS_DSL_SITE"]
-), cutlass.cute.__file__
+assert _under(cutlass.cute.__file__, os.environ["CUTLASS_DSL_SITE"]), (
+    cutlass.cute.__file__
+)
 assert _under(megatron.lite.__file__, os.environ["MLITE_ROOT"]), megatron.lite.__file__
 
 verl_extension_source = inspect.getsource(vLLMColocateWorkerExtension)
@@ -90,9 +129,10 @@ assert verl_extension_source.index("receiver.receive_weights") < (
     verl_extension_source.index("finalize_layerwise_reload")
 )
 _validate_layerwise_bucket_transaction()
-assert _under(
-    transformer_engine.__file__, "/usr/local/lib/python3.12/dist-packages"
-), transformer_engine.__file__
+_validate_dummy_start_layerwise_bucket_transaction()
+assert _under(transformer_engine.__file__, "/usr/local/lib/python3.12/dist-packages"), (
+    transformer_engine.__file__
+)
 if torch.cuda.is_available():
     assert fla_utils.device_platform == "cuda", fla_utils.device_platform
     assert fla_utils.IS_NVIDIA

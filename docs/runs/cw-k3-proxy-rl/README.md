@@ -74,4 +74,7 @@ E8M0-scale layout as the release checkpoint. The K3-only VERL overlay recognizes
 that compressed-tensors format and brackets all IPC buckets in one native vLLM
 layerwise reload transaction. This restores checkpoint-format parameters before
 the first bucket and performs Marlin/CUTLASS post-processing only after the last
-bucket.
+bucket. A rollout created with vLLM's `dummy` loader has no startup checkpoint
+applications from which vLLM can record a reload contract. Only for that
+explicit load format, the finalizer accepts the complete actor update without a
+startup-contract comparison; real-checkpoint startup remains fail-closed.
