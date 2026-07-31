@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from mlite_k3.config import K3Config
@@ -32,6 +34,7 @@ def _tiny_text_config() -> dict:
         },
         "attn_res_block_size": 2,
         "first_k_dense_replace": 1,
+        "moe_layer_freq": 1,
         "moe_intermediate_size": 12,
         "routed_expert_hidden_size": 16,
         "num_experts": 4,
@@ -41,6 +44,8 @@ def _tiny_text_config() -> dict:
         "moe_renormalize": True,
         "topk_method": "noaux_tc",
         "use_grouped_topk": True,
+        "num_expert_group": 1,
+        "topk_group": 1,
         "latent_moe_use_norm": True,
         "hidden_act": "situ",
     }
@@ -62,6 +67,9 @@ def test_config_unwraps_official_multimodal_wrapper_but_models_text_only():
     assert config.num_shared_experts == 2
     assert config.routed_expert_hidden_size == 16
     assert config.moe_intermediate_size == 12
+    assert config.moe_layer_freq == 1
+    assert config.num_expert_group == 1
+    assert config.topk_group == 1
 
 
 def test_config_preserves_official_k3_defaults():
@@ -78,6 +86,73 @@ def test_config_preserves_official_k3_defaults():
     assert config.mla_use_output_gate
     assert config.kda_use_full_rank_gate
     assert config.kda_gate_lower_bound == -5.0
+
+
+def test_transformer_config_contract_covers_dense_moe_and_router_fields():
+    config = K3Config._from_hf_dict(_tiny_text_config())
+    constructor, aliases = config.transformer_config_contract()
+
+    assert constructor == {
+        "num_layers": 4,
+        "hidden_size": 32,
+        "num_attention_heads": 4,
+        "num_query_groups": 4,
+        "num_moe_experts": 4,
+        "moe_ffn_hidden_size": 12,
+        "moe_latent_size": 16,
+        "moe_shared_expert_intermediate_size": 24,
+        "moe_layer_freq": [0, 1, 1, 1],
+        "moe_router_topk": 2,
+        "moe_router_score_function": "sigmoid",
+        "moe_router_pre_softmax": True,
+        "moe_router_topk_scaling_factor": 1.0,
+        "moe_router_num_groups": 1,
+        "moe_router_group_topk": 1,
+        "moe_router_enable_expert_bias": True,
+        "moe_router_bias_update_rate": 0.0,
+        "moe_router_dtype": "fp32",
+        "moe_router_load_balancing_type": "none",
+        "moe_aux_loss_coeff": 0.0,
+        "moe_grouped_gemm": True,
+        "moe_token_dispatcher_type": "alltoall",
+    }
+    assert aliases == {
+        "first_k_dense_replace": 1,
+        "moe_layer_freq_source": 1,
+        "moe_intermediate_size": 12,
+        "routed_expert_hidden_size": 16,
+        "num_experts": 4,
+        "num_experts_per_token": 2,
+        "num_shared_experts": 2,
+        "n_group": 1,
+        "topk_group": 1,
+        "topk_method": "noaux_tc",
+        "norm_topk_prob": True,
+        "scoring_func": "sigmoid",
+        "routed_scaling_factor": 1.0,
+        "use_grouped_topk": True,
+        "latent_moe_use_norm": True,
+    }
+
+    converted = SimpleNamespace(**constructor, **aliases)
+    config.assert_transformer_config_contract(converted)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda fields: fields.pop("first_k_dense_replace"), "missing"),
+        (lambda fields: fields.update(moe_router_topk=3), "mismatched"),
+    ],
+)
+def test_transformer_config_contract_fails_loudly_on_loss_or_drift(mutation, message):
+    config = K3Config._from_hf_dict(_tiny_text_config())
+    constructor, aliases = config.transformer_config_contract()
+    fields = {**constructor, **aliases}
+    mutation(fields)
+
+    with pytest.raises(RuntimeError, match=message):
+        config.assert_transformer_config_contract(SimpleNamespace(**fields))
 
 
 @pytest.mark.parametrize(

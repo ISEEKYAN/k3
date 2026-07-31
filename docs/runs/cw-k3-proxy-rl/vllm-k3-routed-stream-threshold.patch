@@ -1,0 +1,24 @@
+diff --git a/vllm/models/kimi_k3/nvidia/model.py b/vllm/models/kimi_k3/nvidia/model.py
+--- a/vllm/models/kimi_k3/nvidia/model.py
++++ b/vllm/models/kimi_k3/nvidia/model.py
+@@ -120,6 +120,11 @@ from ..common.mm_preprocess import (
+ 
+ logger = init_logger(__name__)
+ 
++# Keep this launch-tuning constant with its sole K3 consumer.  Upstream vLLM
++# moved it out of envs.py, so a Python overlay that mixes those two revisions
++# must not retain the stale envs attribute lookup.
++_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD = 256
++
+ 
+ def _get_padded_moe_intermediate_size(
+     moe_intermediate_size: int,
+@@ -662,7 +667,7 @@ class KimiMoE(nn.Module):
+                 self._down_proj_events[0],
+                 self._down_proj_events[1],
+                 self._down_proj_stream
+-                if num_tokens <= envs.VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD
++                if num_tokens <= _ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD
+                 else None,
+             )
+         )

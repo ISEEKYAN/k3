@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+recipe_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -L)"
+# shellcheck source=image.env
+source "${recipe_dir}/image.env"
+
+: "${K3_ROOT:?set K3_ROOT to the pinned K3 checkout}"
+: "${MLITE_ROOT:?set MLITE_ROOT to the pinned Megatron-LM checkout}"
+: "${VERL_ROOT:?set VERL_ROOT to the pinned VERL checkout}"
+: "${VERL_DEPS_SITE:?set VERL_DEPS_SITE to the pinned VERL dependency site}"
+: "${SLURM_JOB_ID:?K3 runtime must run under Slurm}"
+: "${MEGATRON_ROOT:=${K3_MEGATRON_ROOT}}"
+: "${FLA_SITE:=${K3_FLA_SITE}}"
+: "${VLLM_SITE:=${K3_VLLM_SITE}}"
+: "${CUTLASS_DSL_SITE:=${K3_CUTLASS_DSL_SITE}}"
+: "${VERL_PRUNED_SITE:=${K3_VERL_PRUNED_SITE}}"
+export \
+  MEGATRON_ROOT FLA_SITE VLLM_SITE CUTLASS_DSL_SITE VERL_PRUNED_SITE \
+  MLITE_SOURCE_SHA
+
+assert_source_sha() {
+  local path=$1 expected=$2 label=$3 actual
+  actual=$(git -C "${path}" rev-parse HEAD)
+  if [[ "${actual}" != "${expected}" && "${actual}" != "${expected}"* ]]; then
+    echo "FATAL ${label} source mismatch expected=${expected} actual=${actual}" >&2
+    return 2
+  fi
+}
+
+assert_source_sha "${MLITE_ROOT}" "${MLITE_SOURCE_SHA}" MLite
+assert_source_sha "${VERL_ROOT}" "${VERL_SOURCE_SHA}" VERL
+assert_source_sha "${MEGATRON_ROOT}" "${MCORE_SOURCE_SHA}" MCore
+mlite_patch="${recipe_dir}/mlite-router-replay-model-route-selection.patch"
+if ! git -C "${MLITE_ROOT}" apply --reverse --check "${mlite_patch}"; then
+  echo "FATAL K3 MLite overlay patch is not applied: ${mlite_patch}" >&2
+  exit 2
+fi
+mlite_changed=$(git -C "${MLITE_ROOT}" diff --name-only)
+expected_mlite_changed=$'experimental/lite/megatron/lite/primitive/optimizers/megatron_wrap.py\nexperimental/lite/megatron/lite/runtime/backends/mlite/router_replay.py'
+if [[ "${mlite_changed}" != "${expected_mlite_changed}" ]]; then
+  echo "FATAL unexpected K3 MLite overlay changes: ${mlite_changed}" >&2
+  exit 2
+fi
+verl_patch="${recipe_dir}/verl-mxfp4-layerwise-reload.patch"
+if ! git -C "${VERL_ROOT}" apply --reverse --check "${verl_patch}"; then
+  echo "FATAL K3 VERL overlay patch is not applied: ${verl_patch}" >&2
+  exit 2
+fi
+verl_changed=$(git -C "${VERL_ROOT}" diff --name-only)
+expected_verl_changed="verl/workers/rollout/vllm_rollout/utils.py"
+if [[ "${verl_changed}" != "${expected_verl_changed}" ]]; then
+  echo "FATAL unexpected K3 VERL overlay changes: ${verl_changed}" >&2
+  exit 2
+fi
+mcore_patches=(
+  "${recipe_dir}/mcore-nvrx-capability.patch"
+  "${recipe_dir}/mcore-fp32-hybrid-leaf.patch"
+)
+for mcore_patch in "${mcore_patches[@]}"; do
+  if ! git -C "${MEGATRON_ROOT}" apply --reverse --check "${mcore_patch}"; then
+    echo "FATAL K3 MCore overlay patch is not applied: ${mcore_patch}" >&2
+    exit 2
+  fi
+done
+vllm_patches=(
+  "${recipe_dir}/vllm-k3-routed-stream-threshold.patch"
+  "${recipe_dir}/vllm-moe-sum-abi.patch"
+  "${recipe_dir}/vllm-routed-expert-topk-alias.patch"
+  "${recipe_dir}/vllm-k3-warmup-import.patch"
+  "${recipe_dir}/vllm-optional-router-warmup.patch"
+  "${recipe_dir}/vllm-k3-runtime-capabilities.patch"
+)
+for vllm_patch in "${vllm_patches[@]}"; do
+  if ! patch --batch --reverse --force --dry-run --silent -p1 \
+    -d "${VLLM_SITE}" <"${vllm_patch}"; then
+    echo "FATAL K3 vLLM overlay patch is not applied: ${vllm_patch}" >&2
+    exit 2
+  fi
+done
+mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)
+expected_mcore_changed=$'megatron/core/dist_checkpointing/strategies/nvrx.py\nmegatron/core/optimizer/distrib_optimizer.py'
+if [[ "${mcore_changed}" != "${expected_mcore_changed}" ]]; then
+  echo "FATAL unexpected K3 MCore overlay changes: ${mcore_changed}" >&2
+  exit 2
+fi
+k3_source_sha=$(git -C "${K3_ROOT}" rev-parse HEAD)
+if ! git -C "${K3_ROOT}" merge-base --is-ancestor "${K3_BASE_SOURCE_SHA}" "${k3_source_sha}"; then
+  echo "FATAL K3 source is not based on ${K3_BASE_SOURCE_SHA}: ${k3_source_sha}" >&2
+  exit 2
+fi
+
+export PYTHONNOUSERSITE=1
+export OMP_NUM_THREADS=1
+unset \
+  CONDA_DEFAULT_ENV CONDA_PREFIX PYTHONHOME VIRTUAL_ENV \
+  CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH \
+  CC CXX CFLAGS CPPFLAGS CXXFLAGS LDFLAGS
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
+export CPATH=/usr/include/x86_64-linux-gnu
+export CUDA_HOME=/usr/local/cuda
+export PATH="/usr/local/bin:/usr/bin:/bin:${CUDA_HOME}/bin"
+export LD_LIBRARY_PATH="/usr/local/cuda/compat/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+compiler_path=$(command -v gcc)
+if [[ "${CC}" != /usr/bin/gcc || "${CXX}" != /usr/bin/g++ || "${compiler_path}" != /usr/bin/gcc ]]; then
+  echo "FATAL invalid training compiler CC=${CC} CXX=${CXX} gcc=${compiler_path}" >&2
+  exit 2
+fi
+case "${CC}:${CXX}:${compiler_path}" in
+  *miniforge*|*conda*)
+    echo "FATAL host compiler leaked into training container" >&2
+    exit 2
+    ;;
+esac
+echo "K3_TRAIN_TOOLCHAIN_OK CC=${CC} CXX=${CXX} gcc=${compiler_path}" >&2
+export MLITE_K3_AUTO_REGISTER=1
+export PYTHONPATH="${VERL_ROOT}:${VLLM_SITE}:${VERL_PRUNED_SITE}:${FLA_SITE}:${CUTLASS_DSL_SITE}:${recipe_dir}:${K3_ROOT}/src:${MEGATRON_ROOT}:${MLITE_ROOT}/experimental/lite/examples/verl:${MLITE_ROOT}/experimental/lite:/vllm"
+
+python_bin=$(command -v python3)
+python_version=$("${python_bin}" -c 'import platform; print(platform.python_version())')
+torch_version=$("${python_bin}" -c 'import torch; print(torch.__version__)')
+te_version=$("${python_bin}" -c 'import importlib.metadata; print(importlib.metadata.version("transformer-engine"))')
+fla_version=$("${python_bin}" -c 'import importlib.metadata; print(importlib.metadata.version("flash-linear-attention"))')
+vllm_version=$("${python_bin}" -c 'import importlib.metadata; print(importlib.metadata.version("vllm"))')
+if [[ -n "${K3_GPU_CC:-}" ]]; then
+  gpu_cc="${K3_GPU_CC}"
+else
+  gpu_cc_output=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader)
+  gpu_cc="${gpu_cc_output%%$'\n'*}"
+  gpu_cc="${gpu_cc//[[:space:].]/}"
+fi
+
+training_image_stat=$(stat -Lc "%s:%Y" "${K3_TRAINING_IMAGE}")
+runtime_image_fingerprint="sqsh-stat:${K3_TRAINING_IMAGE}:${training_image_stat}"
+recipe_fingerprint=$(
+  sha256sum \
+    "${recipe_dir}/image.env" \
+    "${BASH_SOURCE[0]}" \
+    "${recipe_dir}/assert_jit_cache_contract.py" \
+    "${recipe_dir}/mcore-nvrx-capability.patch" \
+    "${recipe_dir}/mcore-fp32-hybrid-leaf.patch" \
+    "${recipe_dir}/mlite-router-replay-model-route-selection.patch" \
+    "${recipe_dir}/verl-mxfp4-layerwise-reload.patch" \
+    | sha256sum \
+    | cut -d' ' -f1
+)
+
+fingerprint_input="$(
+  printf '%s\n' \
+    "${runtime_image_fingerprint}" \
+    "${recipe_fingerprint}" \
+    "${k3_source_sha}" \
+    "${MLITE_SOURCE_SHA}" \
+    "${MCORE_SOURCE_SHA}" \
+    "${VERL_SOURCE_SHA}" \
+    "${python_version}" \
+    "${torch_version}" \
+    "${te_version}" \
+    "${fla_version}" \
+    "${vllm_version}" \
+    "${gpu_cc}" \
+    "${PYTHONPATH}"
+)"
+fingerprint=$(printf '%s' "${fingerprint_input}" | sha256sum | cut -c1-20)
+K3_NODE_CACHE_ROOT="${K3_NODE_CACHE_ROOT:-/tmp/k3-${SLURM_JOB_ID}}"
+case "${K3_NODE_CACHE_ROOT}" in
+  /tmp | /tmp/*) ;;
+  *)
+    echo \
+      "FATAL JIT cache must be node-local under /tmp: ${K3_NODE_CACHE_ROOT}" \
+      >&2
+    exit 2
+    ;;
+esac
+cache_dir="${K3_NODE_CACHE_ROOT}/${fingerprint}"
+manifest="${cache_dir}/fingerprint.txt"
+mkdir -p "${cache_dir}"
+if [[ -e "${manifest}" ]]; then
+  actual=$(<"${manifest}")
+  if [[ "${actual}" != "${fingerprint_input}" ]]; then
+    echo "FATAL JIT cache fingerprint mismatch path=${manifest}" >&2
+    exit 2
+  fi
+else
+  printf '%s' "${fingerprint_input}" >"${manifest}"
+fi
+
+export K3_JIT_CACHE_FINGERPRINT="${fingerprint}"
+export HOME="${cache_dir}/home"
+export XDG_CACHE_HOME="${cache_dir}/xdg"
+export FLASHINFER_WORKSPACE_BASE="${cache_dir}/flashinfer"
+export VLLM_CACHE_ROOT="${cache_dir}/vllm"
+export TRITON_CACHE_DIR="${cache_dir}/triton"
+export TORCHINDUCTOR_CACHE_DIR="${cache_dir}/torchinductor"
+export TILELANG_CACHE_DIR="${cache_dir}/tilelang"
+export TILELANG_TMP_DIR="${cache_dir}/tilelang-tmp"
+export PYTHONPYCACHEPREFIX="${cache_dir}/pycache"
+mkdir -p \
+  "${HOME}" \
+  "${XDG_CACHE_HOME}" \
+  "${FLASHINFER_WORKSPACE_BASE}" \
+  "${VLLM_CACHE_ROOT}" \
+  "${TRITON_CACHE_DIR}" \
+  "${TORCHINDUCTOR_CACHE_DIR}" \
+  "${TILELANG_CACHE_DIR}" \
+  "${TILELANG_TMP_DIR}" \
+  "${PYTHONPYCACHEPREFIX}"
+/usr/bin/python3 "${recipe_dir}/assert_jit_cache_contract.py"
+echo "K3_JIT_CACHE_OK fingerprint=${fingerprint} root=${cache_dir}" >&2

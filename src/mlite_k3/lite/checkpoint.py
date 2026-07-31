@@ -265,6 +265,34 @@ class K3WeightSpec:
         if ".gate_up." in native_name or ".fc1." in native_name:
             return torch.cat(hf_tensors, dim=0).contiguous()
         tensor = hf_tensors[0]
+        if native_name.endswith(".self_attention.A_log"):
+            heads = int(getattr(self.config, "kda_num_heads", tensor.numel()))
+            if tensor.ndim != 1 or tensor.numel() < heads:
+                raise ValueError(
+                    f"{native_name!r} must contain at least {heads} KDA heads, "
+                    f"got shape {tuple(tensor.shape)}"
+                )
+            padding = tensor[heads:]
+            if padding.numel() and torch.count_nonzero(padding).item():
+                raise ValueError(
+                    f"{native_name!r} A_log padding must be exactly zero, "
+                    f"got {torch.count_nonzero(padding).item()} nonzero values"
+                )
+            tensor = tensor[:heads]
+        elif native_name.endswith(".self_attention.dt_bias"):
+            if not all(
+                hasattr(self.config, name) for name in ("kda_num_heads", "kda_head_dim")
+            ):
+                return tensor
+            heads = int(self.config.kda_num_heads)
+            head_dim = int(self.config.kda_head_dim)
+            expected = heads * head_dim
+            if tensor.numel() != expected:
+                raise ValueError(
+                    f"{native_name!r} dt_bias must contain exactly {expected} values, "
+                    f"got shape {tuple(tensor.shape)}"
+                )
+            tensor = tensor.reshape(heads, head_dim)
         if re.search(r"\.[qkv]_conv1d\.weight$", native_name):
             if tensor.ndim != 3 or tensor.size(1) != 1:
                 raise ValueError(
@@ -284,7 +312,35 @@ class K3WeightSpec:
                 name.removesuffix("_packed").removesuffix("_scale") for name in names
             )
         )
-        if ".gate_up." in native_name or ".fc1." in native_name:
+        if native_name.endswith(".self_attention.A_log"):
+            if not hasattr(self.config, "kda_num_heads"):
+                return list(zip(names, (tensor,), strict=True))
+            heads = int(self.config.kda_num_heads)
+            if tensor.numel() != heads:
+                raise ValueError(
+                    f"{native_name!r} must contain exactly {heads} active heads, "
+                    f"got shape {tuple(tensor.shape)}"
+                )
+            padded_heads = ((heads + 127) // 128) * 128
+            tensor = torch.nn.functional.pad(
+                tensor.reshape(-1),
+                (0, padded_heads - heads),
+            )
+            parts = (tensor,)
+        elif native_name.endswith(".self_attention.dt_bias"):
+            if not all(
+                hasattr(self.config, name) for name in ("kda_num_heads", "kda_head_dim")
+            ):
+                return list(zip(names, (tensor,), strict=True))
+            heads = int(self.config.kda_num_heads)
+            head_dim = int(self.config.kda_head_dim)
+            if tuple(tensor.shape) != (heads, head_dim):
+                raise ValueError(
+                    f"{native_name!r} must have shape {(heads, head_dim)}, "
+                    f"got {tuple(tensor.shape)}"
+                )
+            parts = (tensor.reshape(-1).contiguous(),)
+        elif ".gate_up." in native_name or ".fc1." in native_name:
             parts = tensor.chunk(2, dim=0)
         elif re.search(r"\.[qkv]_conv1d\.weight$", native_name):
             if tensor.ndim != 3 or tensor.size(1) != 1:

@@ -50,6 +50,7 @@ class K3Config:
     attn_res_block_size: int = 12
 
     first_k_dense_replace: int = 1
+    moe_layer_freq: int = 1
     moe_intermediate_size: int = 3072
     routed_expert_hidden_size: int = 3584
     num_experts: int = 896
@@ -60,6 +61,8 @@ class K3Config:
     routed_scaling_factor: float = 1.0
     topk_method: str = "noaux_tc"
     use_grouped_topk: bool = True
+    num_expert_group: int = 1
+    topk_group: int = 1
     latent_moe_use_norm: bool = True
 
     source_model_type: str = "kimi_k3"
@@ -102,6 +105,90 @@ class K3Config:
     def scoring_func(self) -> str:
         """Shared MLite router spelling."""
         return self.moe_router_activation_func
+
+    @property
+    def n_group(self) -> int:
+        """Shared MLite/MCore group-router spelling."""
+        return self.num_expert_group
+
+    @property
+    def norm_topk_prob(self) -> bool:
+        """Whether selected routing probabilities are renormalized."""
+        return self.moe_renormalize
+
+    def transformer_config_contract(
+        self,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Return explicit MCore constructor overrides and K3 runtime aliases."""
+        moe_layer_freq = [
+            int(
+                layer >= self.first_k_dense_replace and layer % self.moe_layer_freq == 0
+            )
+            for layer in range(self.num_hidden_layers)
+        ]
+        constructor = {
+            "num_layers": self.num_hidden_layers,
+            "hidden_size": self.hidden_size,
+            "num_attention_heads": self.num_attention_heads,
+            "num_query_groups": self.num_key_value_heads,
+            "num_moe_experts": self.num_experts,
+            "moe_ffn_hidden_size": self.moe_intermediate_size,
+            "moe_latent_size": self.routed_expert_hidden_size,
+            "moe_shared_expert_intermediate_size": (
+                self.moe_intermediate_size * self.num_shared_experts
+            ),
+            "moe_layer_freq": moe_layer_freq,
+            "moe_router_topk": self.num_experts_per_token,
+            "moe_router_score_function": self.moe_router_activation_func,
+            "moe_router_pre_softmax": True,
+            "moe_router_topk_scaling_factor": self.routed_scaling_factor,
+            "moe_router_num_groups": self.num_expert_group,
+            "moe_router_group_topk": self.topk_group,
+            "moe_router_enable_expert_bias": True,
+            "moe_router_bias_update_rate": 0.0,
+            "moe_router_dtype": "fp32",
+            "moe_router_load_balancing_type": "none",
+            "moe_aux_loss_coeff": 0.0,
+            "moe_grouped_gemm": True,
+            "moe_token_dispatcher_type": "alltoall",
+        }
+        aliases = {
+            "first_k_dense_replace": self.first_k_dense_replace,
+            "moe_layer_freq_source": self.moe_layer_freq,
+            "moe_intermediate_size": self.moe_intermediate_size,
+            "routed_expert_hidden_size": self.routed_expert_hidden_size,
+            "num_experts": self.num_experts,
+            "num_experts_per_token": self.num_experts_per_token,
+            "num_shared_experts": self.num_shared_experts,
+            "n_group": self.n_group,
+            "topk_group": self.topk_group,
+            "topk_method": self.topk_method,
+            "norm_topk_prob": self.norm_topk_prob,
+            "scoring_func": self.scoring_func,
+            "routed_scaling_factor": self.routed_scaling_factor,
+            "use_grouped_topk": self.use_grouped_topk,
+            "latent_moe_use_norm": self.latent_moe_use_norm,
+        }
+        return constructor, aliases
+
+    def assert_transformer_config_contract(self, transformer_config: Any) -> None:
+        """Fail loudly when K3 architecture semantics are lost during lowering."""
+        constructor, aliases = self.transformer_config_contract()
+        expected = {**constructor, **aliases}
+        missing = sorted(
+            name for name in expected if not hasattr(transformer_config, name)
+        )
+        mismatched = {
+            name: (expected_value, getattr(transformer_config, name))
+            for name, expected_value in expected.items()
+            if name not in missing
+            and getattr(transformer_config, name) != expected_value
+        }
+        if missing or mismatched:
+            raise RuntimeError(
+                "K3 TransformerConfig contract violation: "
+                f"missing={missing}, mismatched={mismatched}"
+            )
 
     @staticmethod
     def ensure_text_only_inputs(
@@ -162,6 +249,7 @@ class K3Config:
             0 <= self.first_k_dense_replace <= self.num_hidden_layers,
             "first_k_dense_replace is out of range",
         )
+        check(self.moe_layer_freq > 0, "moe_layer_freq must be positive")
         check(self.num_experts > 0, "num_experts must be positive")
         check(
             1 <= self.num_experts_per_token <= self.num_experts,
@@ -175,6 +263,15 @@ class K3Config:
         check(self.moe_renormalize, "moe_renormalize must be enabled")
         check(self.topk_method == "noaux_tc", "topk_method must be noaux_tc")
         check(self.use_grouped_topk, "use_grouped_topk must be enabled")
+        check(self.num_expert_group > 0, "num_expert_group must be positive")
+        check(
+            self.num_experts % self.num_expert_group == 0,
+            "num_experts must be divisible by num_expert_group",
+        )
+        check(
+            1 <= self.topk_group <= self.num_expert_group,
+            "topk_group must be in [1, num_expert_group]",
+        )
         check(self.latent_moe_use_norm, "latent_moe_use_norm must be enabled")
         check(self.hidden_act == "situ", "hidden_act must be situ")
         if errors:
