@@ -10,6 +10,9 @@ from types import SimpleNamespace
 import vllm
 from k3_vllm_warmup import kimi_k3_triton_warmup
 from vllm.model_executor.warmup import kernel_warmup
+from vllm.model_executor.kernels.linear.cute_dsl.ll_bf16 import (
+    is_available as is_ll_bf16_gemm_available,
+)
 import transformer_engine
 import transformer_engine.pytorch as te
 import fla
@@ -114,6 +117,7 @@ def _validate_dummy_start_layerwise_bucket_transaction() -> None:
 assert _under(vllm.__file__, os.environ["VLLM_SITE"]), vllm.__file__
 assert kernel_warmup.kimi_k3_triton_warmup is kimi_k3_triton_warmup
 kernel_warmup._warmup_ll_bf16_router_gemm(object())
+assert not is_ll_bf16_gemm_available()
 assert _under(fla.__file__, os.environ["FLA_SITE"]), fla.__file__
 assert _under(cutlass.cute.__file__, os.environ["CUTLASS_DSL_SITE"]), (
     cutlass.cute.__file__

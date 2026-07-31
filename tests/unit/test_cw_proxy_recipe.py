@@ -17,7 +17,7 @@ def test_image_contract_reuses_the_proven_k3_vllm_overlay():
     assert "K3_VLLM_OVERLAY_SOURCE=" in image
     assert "K3_VLLM_OVERLAY=" in image
     assert "k3-vllm-main-prs-overlay" in image
-    assert "k3-vllm-overlay-r1" in image
+    assert "k3-vllm-overlay-r2" in image
     assert 'K3_VLLM_SITE="${K3_VLLM_OVERLAY}/lib/python3.12/site-packages"' in image
     assert "qwen35-cp-overlay-20260613/site" in image
     assert "nvidia_cutlass_dsl/python_packages" in image
@@ -171,6 +171,7 @@ def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     assert "num_experts_per_tok," in expert_alias_patch
     assert "from k3_vllm_warmup import kimi_k3_triton_warmup" in warmup_import_patch
     assert 'find_spec("quack") is None' in optional_warmup_patch
+    assert "import quack.compile_utils" in optional_warmup_patch
     assert "Skipping ll_bf16 router GEMM warmup: quack is unavailable." in (
         optional_warmup_patch
     )
@@ -195,6 +196,7 @@ def test_overlay_validation_is_inside_srun():
     assert '"vllm_file": vllm.__file__' in validation
     assert "kernel_warmup.kimi_k3_triton_warmup is kimi_k3_triton_warmup" in validation
     assert "kernel_warmup._warmup_ll_bf16_router_gemm(object())" in validation
+    assert "assert not is_ll_bf16_gemm_available()" in validation
     assert "_validate_layerwise_bucket_transaction" in validation
     assert "_validate_dummy_start_layerwise_bucket_transaction" in validation
     assert "initialize_layerwise_reload" in validation
