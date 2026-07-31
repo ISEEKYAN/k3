@@ -1,0 +1,41 @@
+diff --git a/vllm/model_executor/layers/fused_moe/routed_experts_capturer.py b/vllm/model_executor/layers/fused_moe/routed_experts_capturer.py
+--- a/vllm/model_executor/layers/fused_moe/routed_experts_capturer.py
++++ b/vllm/model_executor/layers/fused_moe/routed_experts_capturer.py
+@@ -23,17 +23,18 @@
+     """Resolve the per-token expert count from the HF config.
+ 
+     Different model families store this under different attribute names
+-    (e.g. ``num_experts_per_tok`` for DeepSeek, ``top_k_experts`` for Gemma 4).
++    (e.g. ``num_experts_per_tok`` for DeepSeek, ``top_k_experts`` for Gemma 4,
++    and ``num_experts_per_token`` for Kimi K3).
+     """
+-    val = getattr(hf_config, "num_experts_per_tok", None)
+-    if val is None:
+-        val = getattr(hf_config, "top_k_experts", None)
+-    if val is None:
+-        raise ValueError(
+-            "Cannot determine num_experts_per_tok: HF config has neither "
+-            "'num_experts_per_tok' nor 'top_k_experts'"
+-        )
+-    return val
++    keys = ("num_experts_per_tok", "top_k_experts", "num_experts_per_token")
++    for key in keys:
++        val = getattr(hf_config, key, None)
++        if val is not None:
++            return val
++    raise ValueError(
++        "Cannot determine num_experts_per_tok: HF config has none of "
++        f"{keys}"
++    )
+ 
+ 
+ def get_num_experts(hf_config) -> int:
+@@ -301,7 +302,7 @@
+             self.routed_experts_by_slot.nbytes / 1e9,
+             max_num_slots,
+             hf_config.num_hidden_layers,
+-            hf_config.num_experts_per_tok,
++            num_experts_per_tok,
+             self.routed_experts_by_slot.dtype.name,
+         )
+ 

@@ -10,6 +10,7 @@ source "${recipe_dir}/image.env"
 patch_files=(
   "${recipe_dir}/vllm-k3-routed-stream-threshold.patch"
   "${recipe_dir}/vllm-moe-sum-abi.patch"
+  "${recipe_dir}/vllm-routed-expert-topk-alias.patch"
 )
 
 if [[ ! -e "${K3_VLLM_OVERLAY}" ]]; then
