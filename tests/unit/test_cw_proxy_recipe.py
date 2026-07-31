@@ -202,6 +202,9 @@ def test_overlay_validation_is_inside_srun():
     assert "--no-container-entrypoint" in sbatch
     assert "validate_training_overlay.py" in sbatch
     assert "transformer_engine.pytorch" in validation
+    assert "ast.parse" in validation
+    assert "normalize_cp_world_size" in validation
+    assert "from vllm.v1.attention.backends.mla.flashattn_mla import" not in validation
     assert '"vllm_file": vllm.__file__' in validation
     assert "kernel_warmup.kimi_k3_triton_warmup is kimi_k3_triton_warmup" in validation
     assert "kernel_warmup._warmup_ll_bf16_router_gemm(object())" in validation

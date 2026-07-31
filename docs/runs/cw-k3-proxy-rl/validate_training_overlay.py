@@ -1,5 +1,6 @@
 """Import the complete K3 training stack inside a Slurm container step."""
 
+import ast
 import importlib.metadata
 import inspect
 import json
@@ -22,12 +23,34 @@ import megatron.core
 import megatron.lite
 import torch
 from vllm.models.kimi_k3.nvidia.kda import is_flashkda_supported
-from vllm.v1.attention.backends.mla.flashattn_mla import normalize_cp_world_size
 from verl.workers.rollout.vllm_rollout.utils import vLLMColocateWorkerExtension
 
 
 def _under(module_file: str, root: str) -> bool:
     return Path(module_file).resolve().is_relative_to(Path(root).resolve())
+
+
+def _load_normalize_cp_world_size():
+    source_path = (
+        Path(os.environ["VLLM_SITE"])
+        / "vllm/v1/attention/backends/mla/flashattn_mla.py"
+    )
+    tree = ast.parse(source_path.read_text(), filename=str(source_path))
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "normalize_cp_world_size"
+    )
+    namespace = {}
+    exec(
+        compile(
+            ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
+            str(source_path),
+            "exec",
+        ),
+        namespace,
+    )
+    return namespace["normalize_cp_world_size"]
 
 
 def _validate_layerwise_bucket_transaction() -> None:
@@ -121,6 +144,7 @@ assert kernel_warmup.kimi_k3_triton_warmup is kimi_k3_triton_warmup
 kernel_warmup._warmup_ll_bf16_router_gemm(object())
 assert not is_ll_bf16_gemm_available()
 assert "import vllm._flashkda_C" in inspect.getsource(is_flashkda_supported)
+normalize_cp_world_size = _load_normalize_cp_world_size()
 assert [normalize_cp_world_size(value) for value in (-1, 0, 1, 2)] == [1, 1, 1, 2]
 assert _under(fla.__file__, os.environ["FLA_SITE"]), fla.__file__
 assert _under(cutlass.cute.__file__, os.environ["CUTLASS_DSL_SITE"]), (
