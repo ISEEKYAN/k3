@@ -71,27 +71,6 @@ def ensure_k3_warmup_compatibility() -> None:
         print("K3_VLLM_WARMUP_COMPAT restored=pr50000", flush=True)
 
 
-def ensure_optional_router_warmup_compatibility() -> None:
-    """Disable the optional ll_bf16 kernel when its compiler is absent."""
-    from importlib.util import find_spec
-
-    from vllm.model_executor.kernels.linear.cute_dsl import ll_bf16
-    from vllm.model_executor.warmup import kernel_warmup
-
-    if find_spec("quack") is not None:
-        return
-
-    def unavailable_without_quack() -> bool:
-        return False
-
-    def skip_unavailable_ll_bf16_warmup(_model: torch.nn.Module) -> None:
-        print("K3_VLLM_ROUTER_WARMUP skipped=missing_quack", flush=True)
-
-    ll_bf16.is_available = unavailable_without_quack
-    kernel_warmup._warmup_ll_bf16_router_gemm = skip_unavailable_ll_bf16_warmup
-    print("K3_VLLM_ROUTER_KERNEL ll_bf16=disabled missing_quack", flush=True)
-
-
 def initialize_world() -> None:
     if envs.VLLM_DISTRIBUTED_USE_SPLIT_GROUP:
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -111,7 +90,6 @@ def main() -> None:
     ensure_moe_sum_compatibility()
     ensure_flash_attn_mla_compatibility()
     ensure_k3_warmup_compatibility()
-    ensure_optional_router_warmup_compatibility()
     initialize_world()
     rank = dist.get_rank()
 

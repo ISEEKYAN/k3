@@ -128,6 +128,7 @@ def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     moe_abi_patch = read("vllm-moe-sum-abi.patch")
     expert_alias_patch = read("vllm-routed-expert-topk-alias.patch")
     warmup_import_patch = read("vllm-k3-warmup-import.patch")
+    optional_warmup_patch = read("vllm-optional-router-warmup.patch")
     env = read("k3_training_env.sh")
 
     assert "_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD = 256" in patch_text
@@ -137,6 +138,7 @@ def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     assert '"${recipe_dir}/vllm-moe-sum-abi.patch"' in prepare
     assert '"${recipe_dir}/vllm-routed-expert-topk-alias.patch"' in prepare
     assert '"${recipe_dir}/vllm-k3-warmup-import.patch"' in prepare
+    assert '"${recipe_dir}/vllm-optional-router-warmup.patch"' in prepare
     assert "patch --batch --forward --dry-run --silent" in prepare
     assert "if topk_ids is None and expert_map is None:" in moe_abi_patch
     assert "torch.ops._moe_C.moe_sum(input, output)" in moe_abi_patch
@@ -146,9 +148,14 @@ def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
         "from k3_vllm_warmup import kimi_k3_triton_warmup"
         in warmup_import_patch
     )
+    assert 'find_spec("quack") is None' in optional_warmup_patch
+    assert "Skipping ll_bf16 router GEMM warmup: quack is unavailable." in (
+        optional_warmup_patch
+    )
     assert 'for vllm_patch in "${vllm_patches[@]}"' in env
     assert '"${recipe_dir}/vllm-routed-expert-topk-alias.patch"' in env
     assert '"${recipe_dir}/vllm-k3-warmup-import.patch"' in env
+    assert '"${recipe_dir}/vllm-optional-router-warmup.patch"' in env
     assert "patch --batch --reverse --force --dry-run --silent" in env
     assert 'mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)' in env
 
@@ -515,11 +522,6 @@ def test_proxy_generate_reuses_external_launcher_at_tp8():
     assert "def _warm_attn_res(" in warmup
     assert "def _warm_recurrent_kda(" in warmup
     assert "def kimi_k3_triton_warmup(" in warmup
-    assert "ensure_optional_router_warmup_compatibility()" in driver
-    assert 'find_spec("quack") is not None' in driver
-    assert "ll_bf16.is_available = unavailable_without_quack" in driver
-    assert "K3_VLLM_ROUTER_KERNEL ll_bf16=disabled missing_quack" in driver
-    assert "kernel_warmup._warmup_ll_bf16_router_gemm = " in driver
     assert "K3_PROXY_GENERATE_OK" in driver
 
 
