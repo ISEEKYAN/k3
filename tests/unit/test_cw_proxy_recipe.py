@@ -42,6 +42,10 @@ def test_qat_recipe_disables_cudagraph_capture_while_using_k3_aux_streams():
     recipe = read("run_proxy_qat_r3.sbatch")
 
     assert (
+        'export ROLLOUT_MAX_NUM_BATCHED_TOKENS="${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-8192}"'
+        in recipe
+    )
+    assert (
         '+actor_rollout_ref.rollout.engine_kwargs.vllm.compilation_config.'
         'cudagraph_mode=NONE'
     ) in recipe
