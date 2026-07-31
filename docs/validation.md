@@ -7,7 +7,7 @@ paths work.
 ## Frozen bootstrap references
 
 - Megatron Lite: `ISEEKYAN/Megatron-LM` commit
-  `9a5d44e932587ae90489d23b782f0c3cd681aa46`
+  `85eacfbc1acbcfef9b003e0301d409be464d1377`
 - External-package template: `ISEEKYAN/hy3` commit
   `77d99447f6726891d2fcd86f350378466f403783`
 - Model release: `moonshotai/Kimi-K3` commit
@@ -164,11 +164,13 @@ PYTHONPATH=<Megatron-Lite experimental/lite>:src \
   --output ./k3-checkpoint-validation.json
 ```
 
-The command verifies the frozen config and index SHA-256 values before opening
-weights. It then visits every mapped logical parameter, applies the exact
-public-to-native layout transform and its inverse, and compares shape, dtype,
-and raw bytes. It retains one logical tensor group at a time. The JSON report
-is atomically created only after the complete traversal succeeds.
+The command verifies the frozen config and index SHA-256 values, then visits
+every mapped physical source through safetensors headers only. It checks the
+complete key set, dtype and shape metadata, MXFP4 packed/scale pairing, fused
+source compatibility, and the KDA convolution layout without materializing
+tensor payloads. The JSON report is atomically created only after the metadata
+traversal succeeds. This is a mapping/layout audit, not checkpoint-load or
+numerical-parity evidence.
 
 The report does not infer capability coverage from that traversal. Without an
 execution-evidence manifest, every in-scope capability cell is emitted as
@@ -232,10 +234,10 @@ MTP is outside this package scope and therefore has no matrix row rather than
 a hard-coded coverage conclusion.
 
 Repository unit tests include one on-disk safetensors fixture that exercises
-the production reader and atomic report path. Lower-level transform tests use
-an in-memory reader. Both are regression coverage only: a report from the
-complete 1.56-TB release is required before claiming complete-checkpoint
-equality.
+the production header reader and atomic report path. Lower-level transform
+tests use an in-memory metadata reader. Both are regression coverage only:
+checkpoint-load equality requires the scheduler-backed distributed test and
+cannot be inferred from this metadata report.
 
 ### Stage 4: scheduled GPU paths
 
@@ -323,12 +325,15 @@ python -m mlite_k3.validation_harness verify \
   ./artifacts/k3-evidence.json
 ```
 
-Capability cells and axes are reported by the test itself only after its
-assertions succeed; tiers contain scheduling and test-identity constraints,
-not coverage claims. Finalization parses that test report, rejects unknown or
-missing capabilities, and binds the claims to the fingerprinted run record
-and `sacct` artifact. Copying or editing only the top-level JSON cannot
-manufacture coverage. A checkpoint report additionally requires every tier
+Capability cells are reported only as individual `{cell, assertion}` records;
+the harness binds each record to both that assertion name and its fingerprinted
+Slurm job. A combined smoke may report no cells: it is not allowed to turn one
+successful process into a Cartesian-product coverage claim. Tiers contain
+scheduling and test-identity constraints, not coverage claims. Finalization
+rejects unknown, duplicated, or legacy blanket capability records and binds
+the claims to the fingerprinted run record and `sacct` artifact. Copying or
+editing only the top-level JSON cannot manufacture coverage. A checkpoint report
+additionally requires every tier
 marked blocking (`checkpoint_gather_1n` and `checkpoint_gather_2n`); a partial
 bundle may be inspected but cannot be published as complete evidence.
 

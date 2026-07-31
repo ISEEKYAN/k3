@@ -50,6 +50,7 @@ environment inside the K3 checkout:
 ```bash
 git clone https://github.com/ISEEKYAN/Megatron-LM.git
 git clone https://github.com/ISEEKYAN/k3.git
+git -C Megatron-LM checkout 85eacfbc1acbcfef9b003e0301d409be464d1377
 cd k3
 
 python -m venv .venv

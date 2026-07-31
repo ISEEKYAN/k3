@@ -22,28 +22,10 @@ from mlite_k3.lite.model import K3ParallelModel
 from mlite_k3.lite.protocol import ImplConfig, build_model, load_hf_weights
 
 
-_TESTED_STRUCTURES = (
-    "dense",
-    "moe",
-    "mla",
-    "kda",
-    "shared_expert",
-    "router_expert_bias",
-)
-_TESTED_CAPABILITIES = (
-    "load",
-    "save",
-    "export_bf16",
-    "export_mxfp4",
-    "qat_canonical",
-    "shard_rules",
-)
-
-
 def _config() -> K3Config:
     return K3Config(
         hidden_size=256,
-        num_hidden_layers=2,
+        num_hidden_layers=4,
         num_attention_heads=4,
         num_key_value_heads=4,
         vocab_size=256,
@@ -57,8 +39,8 @@ def _config() -> K3Config:
         kda_head_dim=64,
         kda_num_heads=4,
         kda_short_conv_kernel_size=4,
-        full_attention_layers=(2,),
-        kda_layers=(1,),
+        full_attention_layers=(2, 4),
+        kda_layers=(1, 3),
         attn_res_block_size=2,
         first_k_dense_replace=1,
         moe_intermediate_size=128,
@@ -114,6 +96,39 @@ def _checkpoint_state(model: torch.nn.Module):
         )
         if not is_qat_auxiliary:
             yield canonical_state_key(state_name), tensor
+
+
+def _assert_exports_bitwise_equal(
+    expected: dict[str, torch.Tensor],
+    actual: dict[str, torch.Tensor],
+    *,
+    context: str,
+) -> None:
+    if expected.keys() != actual.keys():
+        missing = sorted(expected.keys() - actual.keys())
+        unexpected = sorted(actual.keys() - expected.keys())
+        raise RuntimeError(
+            f"{context} changed the HF key set: "
+            f"missing={missing[:1]!r}, unexpected={unexpected[:1]!r}"
+        )
+    for name, expected_tensor in expected.items():
+        actual_tensor = actual[name]
+        if torch.equal(expected_tensor, actual_tensor):
+            continue
+        detail = (
+            f"shape={tuple(expected_tensor.shape)}/{tuple(actual_tensor.shape)}, "
+            f"dtype={expected_tensor.dtype}/{actual_tensor.dtype}"
+        )
+        if (
+            expected_tensor.shape == actual_tensor.shape
+            and expected_tensor.is_floating_point()
+            and actual_tensor.is_floating_point()
+        ):
+            max_diff = (
+                (expected_tensor.float() - actual_tensor.float()).abs().max().item()
+            )
+            detail += f", max_abs_diff={max_diff}"
+        raise RuntimeError(f"{context} differs at {name!r}: {detail}")
 
 
 @record
@@ -202,10 +217,11 @@ def main() -> None:
             cpu=True,
         )
     )
-    if baseline.keys() != qat_export.keys():
-        raise RuntimeError("K3 QAT changed the canonical HF export key set")
-    if any(not torch.equal(baseline[name], qat_export[name]) for name in baseline):
-        raise RuntimeError("K3 QAT export did not preserve BF16 master weights")
+    _assert_exports_bitwise_equal(
+        baseline,
+        qat_export,
+        context="K3 QAT export versus unparametrized export",
+    )
     del qat_export, single
     torch.cuda.empty_cache()
 
@@ -239,7 +255,9 @@ def main() -> None:
         for name, tensor in checkpoint_state
         if name.endswith(".moe.router.expert_bias")
     ]
-    if expert_bias and any(
+    if not expert_bias:
+        raise RuntimeError("K3 checkpoint contains no router expert_bias")
+    if any(
         tensor.dtype != torch.float32 or not torch.isfinite(tensor).all()
         for tensor in expert_bias
     ):
@@ -253,10 +271,11 @@ def main() -> None:
             cpu=True,
         )
     )
-    if baseline.keys() != gathered_export.keys():
-        raise RuntimeError("K3 TP/EP/PP export changed the HF key set")
-    if any(not torch.equal(baseline[name], gathered_export[name]) for name in baseline):
-        raise RuntimeError("K3 TP/EP/PP export differs from single-rank export")
+    _assert_exports_bitwise_equal(
+        baseline,
+        gathered_export,
+        context="K3 TP/EP/PP export versus single-rank export",
+    )
 
     local_metrics = torch.tensor(
         [
@@ -287,15 +306,15 @@ def main() -> None:
                         manifest.weights.quantized_weights
                         + manifest.weights.plain_tensors
                     ),
-                    "all_checkpoint_tensors_finite": True,
-                    "expert_bias_dtype": "torch.float32",
-                    "qat_key_set_equal": True,
-                    "distributed_qat_import": True,
-                    "tp_ep_pp_bitwise_equal": True,
-                    "capabilities": [
-                        f"{structure}.{capability}"
-                        for structure in _TESTED_STRUCTURES
-                        for capability in _TESTED_CAPABILITIES
+                    "expert_bias_dtype": str(expert_bias[0].dtype),
+                    # This is deliberately one coverage cell per execution output:
+                    # the preceding check proves this exact persistent checkpoint
+                    # field was restored as finite FP32 state after the QAT load.
+                    "assertions": [
+                        {
+                            "cell": "router_expert_bias.load",
+                            "assertion": "expert_bias_is_finite_fp32",
+                        }
                     ],
                     "axes": [
                         name
