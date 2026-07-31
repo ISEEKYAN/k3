@@ -127,6 +127,7 @@ def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     patch_text = read("vllm-k3-routed-stream-threshold.patch")
     moe_abi_patch = read("vllm-moe-sum-abi.patch")
     expert_alias_patch = read("vllm-routed-expert-topk-alias.patch")
+    warmup_import_patch = read("vllm-k3-warmup-import.patch")
     env = read("k3_training_env.sh")
 
     assert "_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD = 256" in patch_text
@@ -135,13 +136,19 @@ def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     assert 'cp -a "${K3_VLLM_OVERLAY_SOURCE}" "${K3_VLLM_OVERLAY}"' in prepare
     assert '"${recipe_dir}/vllm-moe-sum-abi.patch"' in prepare
     assert '"${recipe_dir}/vllm-routed-expert-topk-alias.patch"' in prepare
+    assert '"${recipe_dir}/vllm-k3-warmup-import.patch"' in prepare
     assert "patch --batch --forward --dry-run --silent" in prepare
     assert "if topk_ids is None and expert_map is None:" in moe_abi_patch
     assert "torch.ops._moe_C.moe_sum(input, output)" in moe_abi_patch
     assert '"num_experts_per_token"' in expert_alias_patch
     assert "num_experts_per_tok," in expert_alias_patch
+    assert (
+        "from k3_vllm_warmup import kimi_k3_triton_warmup"
+        in warmup_import_patch
+    )
     assert 'for vllm_patch in "${vllm_patches[@]}"' in env
     assert '"${recipe_dir}/vllm-routed-expert-topk-alias.patch"' in env
+    assert '"${recipe_dir}/vllm-k3-warmup-import.patch"' in env
     assert "patch --batch --reverse --force --dry-run --silent" in env
     assert 'mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)' in env
 

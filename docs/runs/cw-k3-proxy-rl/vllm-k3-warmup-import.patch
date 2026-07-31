@@ -1,0 +1,11 @@
+diff --git a/vllm/model_executor/warmup/kernel_warmup.py b/vllm/model_executor/warmup/kernel_warmup.py
+--- a/vllm/model_executor/warmup/kernel_warmup.py
++++ b/vllm/model_executor/warmup/kernel_warmup.py
+@@ -9,6 +9,7 @@
+ 
+ import torch
+ 
++from k3_vllm_warmup import kimi_k3_triton_warmup
+ import vllm.envs as envs
+ from vllm.logger import init_logger
+ from vllm.model_executor.warmup.cutedsl_warmup import cutedsl_warmup
