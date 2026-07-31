@@ -112,13 +112,18 @@ def test_k3_mcore_overlay_detaches_fp32_dist_opt_shards():
 def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     prepare = read("prepare_vllm_overlay.sh")
     patch_text = read("vllm-k3-routed-stream-threshold.patch")
+    moe_abi_patch = read("vllm-moe-sum-abi.patch")
     env = read("k3_training_env.sh")
 
     assert "_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD = 256" in patch_text
     assert "envs.VLLM_ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD" in patch_text
     assert "if num_tokens <= _ROUTED_DOWN_PROJ_STREAM_TOKEN_THRESHOLD" in patch_text
     assert 'cp -a "${K3_VLLM_OVERLAY_SOURCE}" "${K3_VLLM_OVERLAY}"' in prepare
+    assert '"${recipe_dir}/vllm-moe-sum-abi.patch"' in prepare
     assert 'patch --dry-run --silent -p1 -d "${K3_VLLM_SITE}"' in prepare
+    assert "if topk_ids is None and expert_map is None:" in moe_abi_patch
+    assert "torch.ops._moe_C.moe_sum(input, output)" in moe_abi_patch
+    assert 'for vllm_patch in "${vllm_patches[@]}"' in env
     assert 'patch --dry-run --silent --reverse -p1 -d "${VLLM_SITE}"' in env
     assert 'mcore_changed=$(git -C "${MEGATRON_ROOT}" diff --name-only)' in env
 
