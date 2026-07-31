@@ -22,6 +22,7 @@ def test_image_contract_reuses_the_proven_k3_vllm_overlay():
     assert "qwen35-cp-overlay-20260613/site" in image
     assert "nvidia_cutlass_dsl/python_packages" in image
     assert "mcore-fp32-hybrid-leaf" in image
+    assert "verl-src-mxfp4-r1" in image
     assert "MLITE_SOURCE_SHA=cc4efe6a1" in image
 
 
@@ -122,6 +123,28 @@ def test_k3_mcore_overlay_detaches_fp32_dist_opt_shards():
     assert 'apply --reverse --check "${mcore_patch}"' in env
 
 
+def test_k3_verl_overlay_wraps_all_mxfp4_buckets_in_one_reload_transaction():
+    prepare = read("prepare_verl_overlay.sh")
+    patch = read("verl-mxfp4-layerwise-reload.patch")
+    env = read("k3_training_env.sh")
+
+    assert "git clone --no-hardlinks" in prepare
+    assert 'apply --check "${patch_file}"' in prepare
+    assert 'apply --reverse --check "${patch_file}"' in prepare
+    assert 'expected_changed="verl/workers/rollout/vllm_rollout/utils.py"' in prepare
+    assert ': "${K3_VERL_ROOT:=${K3_VERL_OVERLAY}}"' in prepare
+    assert '"mxfp4-pack-quantized"' in patch
+    assert patch.index("initialize_layerwise_reload") < patch.index(
+        "finalize_layerwise_reload"
+    )
+    assert "finalize_layerwise_reload" in patch
+    assert "layerwise reload transaction initialized" in patch
+    assert "layerwise reload transaction finalized" in patch
+    assert "verl-mxfp4-layerwise-reload.patch" in env
+    assert "unexpected K3 VERL overlay changes" in env
+    assert "git reset" not in prepare
+
+
 def test_k3_vllm_overlay_uses_the_upstream_local_stream_threshold():
     prepare = read("prepare_vllm_overlay.sh")
     patch_text = read("vllm-k3-routed-stream-threshold.patch")
@@ -173,6 +196,10 @@ def test_overlay_validation_is_inside_srun():
     assert '"vllm_file": vllm.__file__' in validation
     assert "kernel_warmup.kimi_k3_triton_warmup is kimi_k3_triton_warmup" in validation
     assert "kernel_warmup._warmup_ll_bf16_router_gemm(object())" in validation
+    assert "_validate_layerwise_bucket_transaction" in validation
+    assert "initialize_layerwise_reload" in validation
+    assert "finalize_layerwise_reload" in validation
+    assert "receiver.receive_weights" in validation
     assert '"transformer_engine_file": transformer_engine.__file__' in validation
     assert "import fla" in validation
     assert '"fla_file": fla.__file__' in validation
@@ -284,6 +311,7 @@ def test_gpu_recipe_is_one_interactive_node_with_qat_r3_and_optional_wandb():
     assert "++actor_rollout_ref.actor.engine.impl_cfg.qat.enabled=true" in runner
     assert "++actor_rollout_ref.actor.engine.impl_cfg.qat.format=mxfp4" in runner
     assert "++actor_rollout_ref.actor.engine.impl_cfg.qat.group_size=32" in runner
+    assert "++actor_rollout_ref.actor.engine.resync_format=mxfp4" in runner
     assert "router_replay_mode=R3" in runner
     assert "enable_rollout_routing_replay=True" in runner
     assert "++actor_rollout_ref.actor.engine.impl_cfg.moe_router_fusion=false" in runner

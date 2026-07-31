@@ -15,6 +15,7 @@ Required overlay inputs:
 - an immutable local `.sqsh` produced once by `cache_image.sbatch`;
 - a Python 3.12 Transformer Engine site built from the pinned source;
 - the pinned Megatron-LM/MLite and VERL source trees;
+- a K3-only VERL overlay prepared by `prepare_verl_overlay.sh`;
 - a VERL dependency site that does not replace image-owned torch, vLLM,
   Transformers, FLA, torchcodec, CUTLASS, or CUDA libraries.
 
@@ -66,3 +67,11 @@ the validated overlay contains pyvers 0.2.2. That pyvers distribution still
 reports `__version__ = "0.1.0"` in its module. The runtime closure imports both
 successfully, so the preflight checks pyvers importability and location instead
 of either inconsistent version string.
+
+The optimizer-backed QAT recipe sets MLite `resync_format=mxfp4`, so routed
+experts cross the actor-to-rollout boundary in the same packed-weight and
+E8M0-scale layout as the release checkpoint. The K3-only VERL overlay recognizes
+that compressed-tensors format and brackets all IPC buckets in one native vLLM
+layerwise reload transaction. This restores checkpoint-format parameters before
+the first bucket and performs Marlin/CUTLASS post-processing only after the last
+bucket.

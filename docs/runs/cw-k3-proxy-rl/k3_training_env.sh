@@ -31,6 +31,17 @@ assert_source_sha() {
 assert_source_sha "${MLITE_ROOT}" "${MLITE_SOURCE_SHA}" MLite
 assert_source_sha "${VERL_ROOT}" "${VERL_SOURCE_SHA}" VERL
 assert_source_sha "${MEGATRON_ROOT}" "${MCORE_SOURCE_SHA}" MCore
+verl_patch="${recipe_dir}/verl-mxfp4-layerwise-reload.patch"
+if ! git -C "${VERL_ROOT}" apply --reverse --check "${verl_patch}"; then
+  echo "FATAL K3 VERL overlay patch is not applied: ${verl_patch}" >&2
+  exit 2
+fi
+verl_changed=$(git -C "${VERL_ROOT}" diff --name-only)
+expected_verl_changed="verl/workers/rollout/vllm_rollout/utils.py"
+if [[ "${verl_changed}" != "${expected_verl_changed}" ]]; then
+  echo "FATAL unexpected K3 VERL overlay changes: ${verl_changed}" >&2
+  exit 2
+fi
 mcore_patches=(
   "${recipe_dir}/mcore-nvrx-capability.patch"
   "${recipe_dir}/mcore-fp32-hybrid-leaf.patch"
@@ -103,6 +114,7 @@ recipe_fingerprint=$(
     "${BASH_SOURCE[0]}" \
     "${recipe_dir}/mcore-nvrx-capability.patch" \
     "${recipe_dir}/mcore-fp32-hybrid-leaf.patch" \
+    "${recipe_dir}/verl-mxfp4-layerwise-reload.patch" \
     | sha256sum \
     | cut -d' ' -f1
 )
