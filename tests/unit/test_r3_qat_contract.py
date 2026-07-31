@@ -250,7 +250,7 @@ def test_unproven_ep_axis_is_not_reported_as_validated():
 
 def test_parallel_axis_evidence_is_explicit_and_traceable():
     dimensions = {"tp": 1, "ep": 2, "etp": 1, "pp": 1, "cp": 1}
-    source = f"job:12345#sha256:{'a' * 64}"
+    source = f"job:12345:assertion:ep_parallel_contract#sha256:{'a' * 64}"
 
     axes, evidence = protocol._resolve_validated_axes(
         dimensions,

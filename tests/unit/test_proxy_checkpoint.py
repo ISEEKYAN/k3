@@ -193,6 +193,4 @@ def test_build_proxy_rewrites_index_and_drops_out_of_scope_tensors(tmp_path):
     assert output_tensors[
         "language_model.model.layers.1.block_sparse_moe.gate.e_score_correction_bias"
     ].shape == (56,)
-    assert {
-        name: (output / name).read_text() for name in remote_code
-    } == remote_code
+    assert {name: (output / name).read_text() for name in remote_code} == remote_code
