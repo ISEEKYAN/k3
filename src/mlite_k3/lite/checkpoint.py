@@ -442,8 +442,6 @@ class K3WeightSpec:
                     f"got {tuple(tensor.shape)}"
                 )
             parts = (tensor.reshape(-1).contiguous(),)
-        elif native_name.endswith(".self_attention.o_norm.weight"):
-            parts = (tensor.float(),)
         elif (layout := self._fusion_layouts.get(native_name)) is not None:
             split = layout.split(tensor)
             parts = tuple(split[segment.name] for segment in layout.segments)
@@ -889,17 +887,7 @@ def plan_k3_rank_weights(
                 native_name,
                 expert_id - expert_start,
             )
-        dtype = (
-            torch.float32
-            if native_name.endswith(
-                (
-                    ".self_attention.A_log",
-                    ".self_attention.dt_bias",
-                    ".moe.router.expert_bias",
-                )
-            )
-            else torch.bfloat16
-        )
+        dtype = _k3_rank_weight_dtype(native_name)
         planned.append(
             K3RankWeight(
                 native_name=native_name,
@@ -917,6 +905,19 @@ def plan_k3_rank_weights(
     if len(names) != len(set(names)):
         raise RuntimeError("K3 rank plan contains duplicate native state keys")
     return tuple(planned)
+
+
+def _k3_rank_weight_dtype(native_name: str) -> torch.dtype:
+    if native_name.endswith(
+        (
+            ".self_attention.A_log",
+            ".self_attention.dt_bias",
+            ".self_attention.o_norm.weight",
+            ".moe.router.expert_bias",
+        )
+    ):
+        return torch.float32
+    return torch.bfloat16
 
 
 def audit_k3_weight_spec_sources(

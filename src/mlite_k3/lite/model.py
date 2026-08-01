@@ -384,6 +384,13 @@ class K3ParallelModel(nn.Module):
                             requires_grad=parameter.requires_grad,
                         ),
                     )
+            o_norm = getattr(attention, "o_norm", None)
+            o_norm_weight = getattr(o_norm, "weight", None)
+            if o_norm_weight is not None and o_norm_weight.dtype != torch.float32:
+                o_norm.weight = nn.Parameter(
+                    o_norm_weight.detach().float(),
+                    requires_grad=o_norm_weight.requires_grad,
+                )
         return model
 
     def forward(

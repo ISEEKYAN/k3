@@ -671,13 +671,20 @@ def test_kda_o_norm_export_restores_official_fp32_dtype():
     spec = K3WeightSpec(_TinyConfig())
     native_name = "layers.0.self_attention.o_norm.weight"
     original = torch.ones(_TinyConfig.kda_head_dim, dtype=torch.float32)
-    loaded = spec.hf_to_native(native_name, [original]).to(torch.bfloat16)
+    loaded = spec.hf_to_native(native_name, [original])
 
     [(exported_name, exported)] = spec.native_to_hf(native_name, loaded)
 
     assert exported_name == "language_model.model.layers.0.self_attn.o_norm.weight"
     assert exported.dtype == torch.float32
     assert torch.equal(exported, original)
+
+
+def test_rank_plan_keeps_official_kda_o_norm_in_fp32():
+    assert (
+        checkpoint._k3_rank_weight_dtype("layers.0.self_attention.o_norm.weight")
+        == torch.float32
+    )
 
 
 def test_k3_weight_spec_removes_release_a_log_zero_padding():
