@@ -913,6 +913,9 @@ def _k3_rank_weight_dtype(native_name: str) -> torch.dtype:
             ".self_attention.A_log",
             ".self_attention.dt_bias",
             ".self_attention.o_norm.weight",
+            ".self_attention.q_conv1d.weight",
+            ".self_attention.k_conv1d.weight",
+            ".self_attention.v_conv1d.weight",
             ".moe.router.expert_bias",
         )
     ):

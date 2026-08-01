@@ -685,6 +685,13 @@ def test_rank_plan_keeps_official_kda_o_norm_in_fp32():
         checkpoint._k3_rank_weight_dtype("layers.0.self_attention.o_norm.weight")
         == torch.float32
     )
+    for projection in ("q", "k", "v"):
+        assert (
+            checkpoint._k3_rank_weight_dtype(
+                f"layers.0.self_attention.{projection}_conv1d.weight"
+            )
+            == torch.float32
+        )
 
 
 def test_k3_weight_spec_removes_release_a_log_zero_padding():
