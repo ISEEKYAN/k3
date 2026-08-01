@@ -12,6 +12,12 @@ from typing import Any, Iterator, Mapping
 
 import torch
 
+from megatron.lite.primitive.ckpt.fused_weights import (
+    FusedWeightLayout,
+    QuantizedWeight,
+    WeightSegment,
+)
+
 
 _EXPECTED_MXFP4_IGNORES = frozenset(
     {
@@ -84,6 +90,38 @@ class K3WeightSpec:
         self.config = config
         self.manifest = manifest
         self._mapping: dict[str, list[str]] | None = None
+        self._fusion_layouts: dict[str, FusedWeightLayout] = {}
+
+    @property
+    def kda_rollout_layout(self) -> FusedWeightLayout:
+        """The training-to-rollout KDA projection contract."""
+        heads = int(self.config.kda_num_heads)
+        head_dim = int(self.config.kda_head_dim)
+        return FusedWeightLayout(
+            name="in_proj_qkvgfab",
+            segments=(
+                WeightSegment("q", heads, head_dim),
+                WeightSegment("k", heads, head_dim),
+                WeightSegment("v", heads, head_dim),
+                WeightSegment("g", heads, head_dim),
+                WeightSegment("f_a", 1, head_dim, replicated=True),
+                WeightSegment("b", heads, 1),
+            ),
+        )
+
+    def _register_fusion(
+        self,
+        native_name: str,
+        *,
+        rows: int,
+        segment_names: tuple[str, ...],
+    ) -> None:
+        self._fusion_layouts[native_name] = FusedWeightLayout(
+            name=native_name,
+            segments=tuple(
+                WeightSegment(segment_name, 1, rows) for segment_name in segment_names
+            ),
+        )
 
     @property
     def num_experts(self) -> int:
@@ -136,10 +174,16 @@ class K3WeightSpec:
             else:
                 self._add_mla(mapping, native, hf)
             if layer < self.config.first_k_dense_replace:
-                mapping[f"{native}.mlp.gate_up.linear.weight"] = [
+                fused_name = f"{native}.mlp.gate_up.linear.weight"
+                mapping[fused_name] = [
                     f"{hf}.mlp.gate_proj.weight",
                     f"{hf}.mlp.up_proj.weight",
                 ]
+                self._register_fusion(
+                    fused_name,
+                    rows=int(self.config.intermediate_size),
+                    segment_names=("gate", "up"),
+                )
                 mapping[f"{native}.mlp.down.linear.weight"] = [
                     f"{hf}.mlp.down_proj.weight"
                 ]
@@ -209,11 +253,23 @@ class K3WeightSpec:
             mapping[f"{native}.moe.{native_suffix}"] = [
                 f"{prefix}.{suffix}" for suffix in hf_suffixes
             ]
+        shared_fused_name = f"{native}.moe.shared_experts.gate_up.linear.weight"
+        self._register_fusion(
+            shared_fused_name,
+            rows=int(self.config.shared_expert_intermediate_size),
+            segment_names=("gate", "up"),
+        )
         for expert in range(self.config.num_experts):
             expert_prefix = f"{prefix}.experts.{expert}"
-            mapping[f"{native}.moe.experts.fc1.weight{expert}"] = self._hf_sources(
+            fused_name = f"{native}.moe.experts.fc1.weight{expert}"
+            mapping[fused_name] = self._hf_sources(
                 f"{expert_prefix}.w1.weight",
                 f"{expert_prefix}.w3.weight",
+            )
+            self._register_fusion(
+                fused_name,
+                rows=int(self.config.moe_intermediate_size),
+                segment_names=("gate", "up"),
             )
             mapping[f"{native}.moe.experts.fc2.weight{expert}"] = self._hf_sources(
                 f"{expert_prefix}.w2.weight"
@@ -251,20 +307,71 @@ class K3WeightSpec:
                 f"{native_name!r} requires {len(expected)} HF tensors, "
                 f"got {len(hf_tensors)}"
             )
+        layout = self._fusion_layouts.get(native_name)
         if self._uses_release_mxfp4 and self.is_expert(native_name):
             if len(hf_tensors) % 2:
                 raise ValueError(f"{native_name!r} requires MXFP4 packed/scale pairs")
-            hf_tensors = [
-                self._materialize_mxfp4_pair(packed, scale)
+            pairs = tuple(
+                QuantizedWeight(packed, scale)
                 for packed, scale in zip(
-                    hf_tensors[0::2],
-                    hf_tensors[1::2],
-                    strict=True,
+                    hf_tensors[0::2], hf_tensors[1::2], strict=True
                 )
+            )
+            if layout is not None:
+                return layout.fuse_quantized_ordered(
+                    tuple(
+                        zip(
+                            (segment.name for segment in layout.segments),
+                            pairs,
+                            strict=True,
+                        )
+                    ),
+                    materialize=lambda pair: self._materialize_mxfp4_pair(
+                        pair.packed, pair.scale
+                    ),
+                )
+            hf_tensors = [
+                self._materialize_mxfp4_pair(pair.packed, pair.scale) for pair in pairs
             ]
-        if ".gate_up." in native_name or ".fc1." in native_name:
-            return torch.cat(hf_tensors, dim=0).contiguous()
+        if layout is not None:
+            return layout.fuse_ordered(
+                tuple(
+                    zip(
+                        (segment.name for segment in layout.segments),
+                        hf_tensors,
+                        strict=True,
+                    )
+                )
+            )
         tensor = hf_tensors[0]
+        if native_name.endswith(".self_attention.A_log"):
+            heads = int(getattr(self.config, "kda_num_heads", tensor.numel()))
+            if tensor.ndim != 1 or tensor.numel() < heads:
+                raise ValueError(
+                    f"{native_name!r} must contain at least {heads} KDA heads, "
+                    f"got shape {tuple(tensor.shape)}"
+                )
+            padding = tensor[heads:]
+            if padding.numel() and torch.count_nonzero(padding).item():
+                raise ValueError(
+                    f"{native_name!r} A_log padding must be exactly zero, "
+                    f"got {torch.count_nonzero(padding).item()} nonzero values"
+                )
+            tensor = tensor[:heads]
+        elif native_name.endswith(".self_attention.dt_bias"):
+            if not all(
+                hasattr(self.config, name) for name in ("kda_num_heads", "kda_head_dim")
+            ):
+                return tensor
+            heads = int(self.config.kda_num_heads)
+            head_dim = int(self.config.kda_head_dim)
+            expected = heads * head_dim
+            if tensor.numel() != expected:
+                raise ValueError(
+                    f"{native_name!r} dt_bias must contain exactly {expected} values, "
+                    f"got shape {tuple(tensor.shape)}"
+                )
+            tensor = tensor.reshape(heads, head_dim)
         if re.search(r"\.[qkv]_conv1d\.weight$", native_name):
             if tensor.ndim != 3 or tensor.size(1) != 1:
                 raise ValueError(
@@ -284,8 +391,37 @@ class K3WeightSpec:
                 name.removesuffix("_packed").removesuffix("_scale") for name in names
             )
         )
-        if ".gate_up." in native_name or ".fc1." in native_name:
-            parts = tensor.chunk(2, dim=0)
+        if native_name.endswith(".self_attention.A_log"):
+            if not hasattr(self.config, "kda_num_heads"):
+                return list(zip(names, (tensor,), strict=True))
+            heads = int(self.config.kda_num_heads)
+            if tensor.numel() != heads:
+                raise ValueError(
+                    f"{native_name!r} must contain exactly {heads} active heads, "
+                    f"got shape {tuple(tensor.shape)}"
+                )
+            padded_heads = ((heads + 127) // 128) * 128
+            tensor = torch.nn.functional.pad(
+                tensor.reshape(-1),
+                (0, padded_heads - heads),
+            )
+            parts = (tensor,)
+        elif native_name.endswith(".self_attention.dt_bias"):
+            if not all(
+                hasattr(self.config, name) for name in ("kda_num_heads", "kda_head_dim")
+            ):
+                return list(zip(names, (tensor,), strict=True))
+            heads = int(self.config.kda_num_heads)
+            head_dim = int(self.config.kda_head_dim)
+            if tuple(tensor.shape) != (heads, head_dim):
+                raise ValueError(
+                    f"{native_name!r} must have shape {(heads, head_dim)}, "
+                    f"got {tuple(tensor.shape)}"
+                )
+            parts = (tensor.reshape(-1).contiguous(),)
+        elif (layout := self._fusion_layouts.get(native_name)) is not None:
+            split = layout.split(tensor)
+            parts = tuple(split[segment.name] for segment in layout.segments)
         elif re.search(r"\.[qkv]_conv1d\.weight$", native_name):
             if tensor.ndim != 3 or tensor.size(1) != 1:
                 raise ValueError(
@@ -365,122 +501,156 @@ def _k3_local_shape(
     tp_size: int,
     etp_size: int,
 ) -> tuple[int, ...]:
+    """Resolve a rank-local shape from exact declared state keys."""
     hidden = config.hidden_size
-    if native_name in {
-        "embed_tokens.embedding.weight",
-        "lm_head.col.linear.weight",
-    }:
-        vocab_divisor = math.lcm(128, tp_size)
-        padded_vocab = math.ceil(config.vocab_size / vocab_divisor) * vocab_divisor
-        return (padded_vocab // tp_size, hidden)
-    if native_name in {
-        "output_attn_res_norm.weight",
-        "norm.weight",
-    } or native_name.endswith(
-        (
-            ".input_layernorm.weight",
-            ".post_attention_layernorm.weight",
-            ".self_attention_res_norm.weight",
-            ".mlp_res_norm.weight",
-        )
-    ):
-        return (hidden,)
-    if native_name == "output_attn_res_proj.weight" or native_name.endswith(
-        (".self_attention_res_proj.weight", ".mlp_res_proj.weight")
-    ):
-        return (1, hidden)
+    vocab_divisor = math.lcm(128, tp_size)
+    padded_vocab = math.ceil(config.vocab_size / vocab_divisor) * vocab_divisor
+    shapes: dict[str, tuple[int, ...]] = {
+        "embed_tokens.embedding.weight": (padded_vocab // tp_size, hidden),
+        "lm_head.col.linear.weight": (padded_vocab // tp_size, hidden),
+        "output_attn_res_norm.weight": (hidden,),
+        "output_attn_res_proj.weight": (1, hidden),
+        "norm.weight": (hidden,),
+    }
 
-    if ".self_attention." in native_name:
-        suffix = native_name.split(".self_attention.", 1)[1]
-        kda_projection = config.kda_num_heads * config.kda_head_dim
-        if suffix in {
-            "q_proj.linear.weight",
-            "k_proj.linear.weight",
-            "v_proj.linear.weight",
-            "g_proj.linear.weight",
-        }:
-            return (kda_projection // tp_size, hidden)
-        if suffix == "f_a_proj.weight":
-            return (config.kda_head_dim, hidden)
-        if suffix == "f_b_proj.linear.weight":
-            return (kda_projection // tp_size, config.kda_head_dim)
-        if suffix == "b_proj.linear.weight":
-            return (config.kda_num_heads // tp_size, hidden)
-        if suffix in {"A_log", "dt_bias"}:
-            tail = () if suffix == "A_log" else (config.kda_head_dim,)
-            return (config.kda_num_heads // tp_size, *tail)
-        if re.fullmatch(r"[qkv]_conv1d\.weight", suffix):
-            return (
-                kda_projection // tp_size,
-                1,
-                config.kda_short_conv_kernel_size,
-            )
-        if suffix == "o_norm.weight":
-            return (config.kda_head_dim,)
-        if suffix == "o_proj.linear.weight":
-            return (hidden, kda_projection // tp_size)
+    for layer in range(config.num_hidden_layers):
+        prefix = f"layers.{layer}"
+        for suffix in (
+            "input_layernorm.weight",
+            "post_attention_layernorm.weight",
+            "self_attention_res_norm.weight",
+            "mlp_res_norm.weight",
+        ):
+            shapes[f"{prefix}.{suffix}"] = (hidden,)
+        for suffix in ("self_attention_res_proj.weight", "mlp_res_proj.weight"):
+            shapes[f"{prefix}.{suffix}"] = (1, hidden)
 
-        q_head_dim = config.qk_nope_head_dim + config.qk_rope_head_dim
-        if suffix == "linear_q_down_proj.weight":
-            return (config.q_lora_rank, hidden)
-        if suffix == "linear_q_up_proj.linear.layer_norm_weight":
-            return (config.q_lora_rank,)
-        if suffix == "linear_q_up_proj.linear.weight":
-            return (
-                config.num_attention_heads * q_head_dim // tp_size,
-                config.q_lora_rank,
+        attention = f"{prefix}.self_attention"
+        if config.attention_type(layer) == "kda":
+            projection = config.kda_num_heads * config.kda_head_dim
+            for segment in K3WeightSpec(config).kda_rollout_layout.segments:
+                suffix = {
+                    "q": "q_proj.linear.weight",
+                    "k": "k_proj.linear.weight",
+                    "v": "v_proj.linear.weight",
+                    "g": "g_proj.linear.weight",
+                    "f_a": "f_a_proj.weight",
+                    "b": "b_proj.linear.weight",
+                }[segment.name]
+                rows = segment.local_rows(tp_size)
+                shapes[f"{attention}.{suffix}"] = (rows, hidden)
+            shapes.update(
+                {
+                    f"{attention}.f_b_proj.linear.weight": (
+                        projection // tp_size,
+                        config.kda_head_dim,
+                    ),
+                    f"{attention}.A_log": (config.kda_num_heads // tp_size,),
+                    f"{attention}.dt_bias": (
+                        config.kda_num_heads // tp_size,
+                        config.kda_head_dim,
+                    ),
+                    f"{attention}.o_norm.weight": (config.kda_head_dim,),
+                    f"{attention}.o_proj.linear.weight": (
+                        hidden,
+                        projection // tp_size,
+                    ),
+                }
             )
-        if suffix == "linear_kv_down_proj.weight":
-            return (config.kv_lora_rank + config.qk_rope_head_dim, hidden)
-        if suffix == "linear_kv_up_proj.linear.layer_norm_weight":
-            return (config.kv_lora_rank,)
-        if suffix == "linear_kv_up_proj.linear.weight":
-            return (
-                config.num_attention_heads
-                * (config.qk_nope_head_dim + config.v_head_dim)
-                // tp_size,
-                config.kv_lora_rank,
+            for name in ("q", "k", "v"):
+                shapes[f"{attention}.{name}_conv1d.weight"] = (
+                    projection // tp_size,
+                    1,
+                    config.kda_short_conv_kernel_size,
+                )
+        else:
+            q_head_dim = config.qk_nope_head_dim + config.qk_rope_head_dim
+            shapes.update(
+                {
+                    f"{attention}.linear_q_down_proj.weight": (
+                        config.q_lora_rank,
+                        hidden,
+                    ),
+                    f"{attention}.linear_q_up_proj.linear.layer_norm_weight": (
+                        config.q_lora_rank,
+                    ),
+                    f"{attention}.linear_q_up_proj.linear.weight": (
+                        config.num_attention_heads * q_head_dim // tp_size,
+                        config.q_lora_rank,
+                    ),
+                    f"{attention}.linear_kv_down_proj.weight": (
+                        config.kv_lora_rank + config.qk_rope_head_dim,
+                        hidden,
+                    ),
+                    f"{attention}.linear_kv_up_proj.linear.layer_norm_weight": (
+                        config.kv_lora_rank,
+                    ),
+                    f"{attention}.linear_kv_up_proj.linear.weight": (
+                        config.num_attention_heads
+                        * (config.qk_nope_head_dim + config.v_head_dim)
+                        // tp_size,
+                        config.kv_lora_rank,
+                    ),
+                    f"{attention}.linear_g_proj.linear.weight": (
+                        config.num_attention_heads * config.v_head_dim // tp_size,
+                        hidden,
+                    ),
+                    f"{attention}.linear_proj.linear.weight": (
+                        hidden,
+                        config.num_attention_heads * config.v_head_dim // tp_size,
+                    ),
+                }
             )
-        if suffix == "linear_g_proj.linear.weight":
-            return (
-                config.num_attention_heads * config.v_head_dim // tp_size,
+
+        if layer < config.first_k_dense_replace:
+            shapes[f"{prefix}.mlp.gate_up.linear.weight"] = (
+                2 * config.intermediate_size // tp_size,
                 hidden,
             )
-        if suffix == "linear_proj.linear.weight":
-            return (
+            shapes[f"{prefix}.mlp.down.linear.weight"] = (
                 hidden,
-                config.num_attention_heads * config.v_head_dim // tp_size,
+                config.intermediate_size // tp_size,
+            )
+            continue
+
+        moe = f"{prefix}.moe"
+        shapes.update(
+            {
+                f"{moe}.router.gate.weight": (config.num_experts, hidden),
+                f"{moe}.router.expert_bias": (config.num_experts,),
+                f"{moe}.routed_expert_down_proj.weight": (
+                    config.routed_expert_hidden_size,
+                    hidden,
+                ),
+                f"{moe}.routed_expert_norm.weight": (config.routed_expert_hidden_size,),
+                f"{moe}.routed_expert_up_proj.weight": (
+                    hidden,
+                    config.routed_expert_hidden_size,
+                ),
+                f"{moe}.shared_experts.gate_up.linear.weight": (
+                    2 * config.shared_expert_intermediate_size // tp_size,
+                    hidden,
+                ),
+                f"{moe}.shared_experts.down.linear.weight": (
+                    hidden,
+                    config.shared_expert_intermediate_size // tp_size,
+                ),
+            }
+        )
+        for expert in range(config.num_experts):
+            shapes[f"{moe}.experts.fc1.weight{expert}"] = (
+                2 * config.moe_intermediate_size // etp_size,
+                config.routed_expert_hidden_size,
+            )
+            shapes[f"{moe}.experts.fc2.weight{expert}"] = (
+                config.routed_expert_hidden_size,
+                config.moe_intermediate_size // etp_size,
             )
 
-    if native_name.endswith(".mlp.gate_up.linear.weight"):
-        return (2 * config.intermediate_size // tp_size, hidden)
-    if native_name.endswith(".mlp.down.linear.weight"):
-        return (hidden, config.intermediate_size // tp_size)
-    if native_name.endswith(".moe.router.gate.weight"):
-        return (config.num_experts, hidden)
-    if native_name.endswith(".moe.router.expert_bias"):
-        return (config.num_experts,)
-    if native_name.endswith(".moe.routed_expert_down_proj.weight"):
-        return (config.routed_expert_hidden_size, hidden)
-    if native_name.endswith(".moe.routed_expert_norm.weight"):
-        return (config.routed_expert_hidden_size,)
-    if native_name.endswith(".moe.routed_expert_up_proj.weight"):
-        return (hidden, config.routed_expert_hidden_size)
-    if native_name.endswith(".moe.shared_experts.gate_up.linear.weight"):
-        return (2 * config.shared_expert_intermediate_size // tp_size, hidden)
-    if native_name.endswith(".moe.shared_experts.down.linear.weight"):
-        return (hidden, config.shared_expert_intermediate_size // tp_size)
-    if ".moe.experts.fc1." in native_name:
-        return (
-            2 * config.moe_intermediate_size // etp_size,
-            config.routed_expert_hidden_size,
-        )
-    if ".moe.experts.fc2." in native_name:
-        return (
-            config.routed_expert_hidden_size,
-            config.moe_intermediate_size // etp_size,
-        )
-    raise KeyError(f"no K3 dry-run shape rule for {native_name!r}")
+    try:
+        return shapes[native_name]
+    except KeyError as error:
+        raise KeyError(f"no K3 dry-run shape rule for {native_name!r}") from error
 
 
 def plan_k3_rank_weights(
@@ -553,7 +723,7 @@ def plan_k3_rank_weights(
                 native_name=native_name,
                 hf_names=tuple(hf_names),
                 shape=_k3_local_shape(
-                    native_name,
+                    global_name,
                     config,
                     tp_size=tp_size,
                     etp_size=etp_size,

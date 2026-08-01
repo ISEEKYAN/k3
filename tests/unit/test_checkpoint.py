@@ -270,6 +270,12 @@ class _TinyConfig:
     first_k_dense_replace = 1
     num_experts = 1
     vocab_size = 64
+    kda_num_heads = 3
+    kda_head_dim = 4
+    intermediate_size = 3
+    shared_expert_intermediate_size = 3
+    moe_intermediate_size = 3
+    routed_expert_hidden_size = 4
 
     @staticmethod
     def attention_type(layer_index: int) -> str:
@@ -359,6 +365,85 @@ def test_k3_weight_spec_implements_hf_weights_parallel_contract():
     ]
 
 
+def test_k3_rollout_layout_exports_every_segment_bit_exactly() -> None:
+    class TinyExportConfig(_TinyConfig):
+        num_hidden_layers = 1
+        kda_num_heads = 2
+        kda_head_dim = 8
+
+    layout = K3WeightSpec(TinyExportConfig()).kda_rollout_layout
+    source = {
+        segment.name: torch.full((segment.rows, 3), index, dtype=torch.int32)
+        for index, segment in enumerate(layout.segments, start=1)
+    }
+
+    fused = layout.fuse_ordered(
+        tuple((segment.name, source[segment.name]) for segment in layout.segments)
+    )
+    restored = layout.split(fused)
+
+    assert tuple(restored) == ("q", "k", "v", "g", "f_a", "b")
+    for segment in layout.segments:
+        assert torch.equal(restored[segment.name], source[segment.name])
+
+
+def test_k3_declares_the_rollout_kda_fusion_geometry() -> None:
+    layout = K3WeightSpec(_TinyConfig()).kda_rollout_layout
+
+    assert tuple(segment.name for segment in layout.segments) == (
+        "q",
+        "k",
+        "v",
+        "g",
+        "f_a",
+        "b",
+    )
+    assert tuple(segment.rows for segment in layout.segments) == (12, 12, 12, 12, 4, 3)
+    assert tuple(segment.replicated for segment in layout.segments) == (
+        False,
+        False,
+        False,
+        False,
+        True,
+        False,
+    )
+
+
+def test_k3_rollout_layout_rejects_wrong_order_and_head_count() -> None:
+    layout = K3WeightSpec(_TinyConfig()).kda_rollout_layout
+    source = {segment.name: torch.zeros(segment.rows, 2) for segment in layout.segments}
+    wrong_order = tuple(
+        (name, source[name]) for name in ("q", "v", "k", "g", "f_a", "b")
+    )
+
+    with pytest.raises(ValueError, match=r"segment order mismatch.*k.*v"):
+        layout.fuse_ordered(wrong_order)
+
+    source["q"] = torch.zeros(source["q"].size(0) + layout.segments[0].head_dim, 2)
+    with pytest.raises(ValueError, match=r"q.*12 rows.*got 16"):
+        layout.fuse_ordered(
+            tuple((segment.name, source[segment.name]) for segment in layout.segments)
+        )
+
+
+def test_k3_rollout_layout_splits_each_mxfp4_scale_bit_exactly() -> None:
+    layout = K3WeightSpec(_TinyConfig()).kda_rollout_layout
+    packed = {
+        segment.name: torch.full((segment.rows, 2), index, dtype=torch.uint8)
+        for index, segment in enumerate(layout.segments, start=1)
+    }
+    scales = {
+        segment.name: torch.full((segment.rows, 1), index + 10, dtype=torch.uint8)
+        for index, segment in enumerate(layout.segments, start=1)
+    }
+
+    restored = layout.split_quantized(layout.fuse(packed), layout.fuse(scales))
+
+    for segment in layout.segments:
+        assert torch.equal(restored[segment.name].packed, packed[segment.name])
+        assert torch.equal(restored[segment.name].scale, scales[segment.name])
+
+
 def test_k3_weight_spec_materializes_mxfp4_sources_from_manifest():
     manifest = K3CheckpointManifest(
         quantization=K3QuantizationMetadata(
@@ -381,11 +466,11 @@ def test_k3_weight_spec_materializes_mxfp4_sources_from_manifest():
         "language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight_scale",
     ]
 
-    packed = torch.zeros(2, 16, dtype=torch.uint8)
-    scale = torch.full((2, 1), 127, dtype=torch.uint8)
+    packed = torch.zeros(3, 16, dtype=torch.uint8)
+    scale = torch.full((3, 1), 127, dtype=torch.uint8)
     materialized = spec.hf_to_native(native, [packed, scale, packed, scale])
 
-    assert materialized.shape == (4, 32)
+    assert materialized.shape == (6, 32)
     assert materialized.dtype == torch.float32
 
 
@@ -459,7 +544,88 @@ def test_k3_export_delegates_to_shared_hfweights_primitive(monkeypatch):
     assert kwargs == {"vocab_size": 64}
 
 
-def test_k3_weight_spec_applies_only_the_two_required_layout_transforms():
+def test_k3_weight_spec_removes_release_a_log_zero_padding():
+    spec = K3WeightSpec(_TinyConfig())
+    active = torch.arange(spec.config.kda_num_heads, dtype=torch.float32)
+    padded = torch.cat((active, torch.zeros(5)))
+
+    native = spec.hf_to_native(
+        "layers.0.self_attention.A_log",
+        [padded],
+    )
+
+    assert torch.equal(native, active)
+
+
+def test_k3_weight_spec_rejects_nonzero_a_log_padding():
+    spec = K3WeightSpec(_TinyConfig())
+    padded = torch.cat(
+        (
+            torch.zeros(spec.config.kda_num_heads),
+            torch.tensor([0.0, 1.0]),
+        )
+    )
+
+    with pytest.raises(ValueError, match="A_log padding must be exactly zero"):
+        spec.hf_to_native("layers.0.self_attention.A_log", [padded])
+
+
+def test_k3_weight_spec_reshapes_release_dt_bias():
+    spec = K3WeightSpec(_TinyConfig())
+    flattened = torch.arange(
+        spec.config.kda_num_heads * spec.config.kda_head_dim,
+        dtype=torch.float32,
+    )
+
+    native = spec.hf_to_native(
+        "layers.0.self_attention.dt_bias",
+        [flattened],
+    )
+
+    assert native.shape == (
+        spec.config.kda_num_heads,
+        spec.config.kda_head_dim,
+    )
+    assert torch.equal(native.flatten(), flattened)
+
+
+def test_k3_weight_spec_restores_release_kda_layouts_on_export():
+    spec = K3WeightSpec(_TinyConfig())
+    a_log = torch.arange(spec.config.kda_num_heads, dtype=torch.float32)
+    dt_bias = torch.arange(
+        spec.config.kda_num_heads * spec.config.kda_head_dim,
+        dtype=torch.float32,
+    ).reshape(spec.config.kda_num_heads, spec.config.kda_head_dim)
+
+    [(a_log_name, exported_a_log)] = spec.native_to_hf(
+        "layers.0.self_attention.A_log",
+        a_log,
+    )
+    [(dt_bias_name, exported_dt_bias)] = spec.native_to_hf(
+        "layers.0.self_attention.dt_bias",
+        dt_bias,
+    )
+
+    assert a_log_name.endswith(".self_attn.A_log")
+    assert exported_a_log.shape == (128,)
+    assert torch.equal(exported_a_log[: spec.config.kda_num_heads], a_log)
+    assert torch.count_nonzero(exported_a_log[spec.config.kda_num_heads :]) == 0
+    assert dt_bias_name.endswith(".self_attn.dt_bias")
+    assert exported_dt_bias.shape == (
+        spec.config.kda_num_heads * spec.config.kda_head_dim,
+    )
+    assert torch.equal(exported_dt_bias, dt_bias.flatten())
+
+
+def test_k3_weight_spec_rejects_wrong_dt_bias_size():
+    spec = K3WeightSpec(_TinyConfig())
+    wrong = torch.zeros(spec.config.kda_num_heads * spec.config.kda_head_dim + 1)
+
+    with pytest.raises(ValueError, match="dt_bias must contain exactly 12 values"):
+        spec.hf_to_native("layers.0.self_attention.dt_bias", [wrong])
+
+
+def test_k3_weight_spec_applies_required_layout_transforms():
     spec = K3WeightSpec(_TinyConfig())
     gate = torch.randn(3, 4)
     up = torch.randn(3, 4)
@@ -555,6 +721,8 @@ class _ExpertConfig:
     num_hidden_layers = 1
     first_k_dense_replace = 0
     num_experts = 1
+    shared_expert_intermediate_size = 3
+    moe_intermediate_size = 3
 
     @staticmethod
     def attention_type(layer_index: int) -> str:

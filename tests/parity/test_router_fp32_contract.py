@@ -64,7 +64,7 @@ def _k3_router_call() -> ast.Call:
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "SigmoidTopKRouter"
+        and node.func.id == "K3SigmoidTopKRouter"
     ]
     assert len(calls) == 1
     return calls[0]
@@ -188,3 +188,50 @@ def test_k3_declares_and_matches_fp32_shared_router_contract(monkeypatch):
     assert metrics["default_probs_max_abs"] > 0.0
     assert metrics["fp32_probs_max_abs"] == 0.0
     assert metrics["fp32_routing_map_mismatches"] == 0
+
+
+def test_k3_router_accumulates_replayed_expert_counts_for_mcore_finalize(monkeypatch):
+    _install_transformer_engine_import_stub(monkeypatch)
+    from mlite_k3.primitive.router import K3SigmoidTopKRouter
+
+    config = SimpleNamespace(
+        hidden_size=4,
+        n_routed_experts=4,
+        num_experts_per_tok=2,
+        aux_loss_alpha=0.0,
+        routed_scaling_factor=1.0,
+        scoring_func="sigmoid",
+    )
+    router = K3SigmoidTopKRouter(
+        config,
+        SimpleNamespace(tp_size=1, tp_group=None),
+        compute_aux_loss=False,
+        router_dtype=torch.float32,
+        expert_bias_persistent=True,
+    )
+    hidden = torch.tensor(
+        [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]],
+        requires_grad=True,
+    )
+
+    class _Replay:
+        def select_indices(self, native_indices):
+            return torch.tensor([[0, 1], [0, 1]], device=native_indices.device)
+
+    router.router_replay = _Replay()
+
+    _, indices = router(hidden)
+    expected = torch.bincount(
+        indices.flatten(), minlength=config.n_routed_experts
+    ).float()
+    assert router.local_tokens_per_expert.dtype is torch.float32
+    assert torch.equal(router.local_tokens_per_expert, expected)
+    assert "expert_bias" in router.state_dict()
+    assert "local_tokens_per_expert" not in router.state_dict()
+
+    with torch.no_grad():
+        router(hidden.detach())
+    assert torch.equal(router.local_tokens_per_expert, expected)
+
+    router.local_tokens_per_expert.zero_()
+    assert torch.count_nonzero(router.local_tokens_per_expert) == 0

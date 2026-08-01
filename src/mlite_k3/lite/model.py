@@ -9,7 +9,6 @@ import torch.nn as nn
 import transformer_engine.pytorch as te
 
 from megatron.lite.primitive.modules.dispatcher import TokenDispatcher
-from megatron.lite.primitive.modules.router import SigmoidTopKRouter
 from megatron.lite.primitive.ops.cross_entropy import vocab_parallel_cross_entropy
 from megatron.lite.primitive.parallel import (
     ColumnParallelLinear,
@@ -41,6 +40,7 @@ from mlite_k3.primitive.experts import K3LatentExperts
 from mlite_k3.primitive.kda import kda
 from mlite_k3.primitive.kda_parallel import K3FullRankGatedDeltaNet
 from mlite_k3.primitive.mla import K3MultiLatentAttention
+from mlite_k3.primitive.router import K3SigmoidTopKRouter
 
 
 def _situ_with_probs(
@@ -101,7 +101,7 @@ class ParallelLatentMoE(nn.Module):
     ):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.router = SigmoidTopKRouter(
+        self.router = K3SigmoidTopKRouter(
             config,
             ps,
             compute_aux_loss=False,
