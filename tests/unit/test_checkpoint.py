@@ -465,6 +465,8 @@ def test_k3_weight_spec_materializes_mxfp4_sources_from_manifest():
         "language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight_packed",
         "language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight_scale",
     ]
+    assert spec.raw_hf_source(native, 0, sources[0]) is True
+    assert spec.raw_hf_source(native, 1, sources[1]) is True
 
     packed = torch.zeros(3, 16, dtype=torch.uint8)
     scale = torch.full((3, 1), 127, dtype=torch.uint8)

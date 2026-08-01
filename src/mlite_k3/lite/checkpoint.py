@@ -141,6 +141,20 @@ class K3WeightSpec:
             source for name in names for source in (f"{name}_packed", f"{name}_scale")
         ]
 
+    def raw_hf_source(
+        self,
+        native_name: str,
+        index: int,
+        resolved_name: str,
+    ) -> bool:
+        """Keep paired release MXFP4 components raw until K3 materializes them."""
+        del index
+        return (
+            self._uses_release_mxfp4
+            and self.is_expert(native_name)
+            and resolved_name.endswith(("_packed", "_scale"))
+        )
+
     def weight_map(self) -> dict[str, list[str]]:
         if self._mapping is not None:
             return self._mapping
