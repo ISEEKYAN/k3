@@ -442,6 +442,8 @@ class K3WeightSpec:
                     f"got {tuple(tensor.shape)}"
                 )
             parts = (tensor.reshape(-1).contiguous(),)
+        elif native_name.endswith(".self_attention.o_norm.weight"):
+            parts = (tensor.float(),)
         elif (layout := self._fusion_layouts.get(native_name)) is not None:
             split = layout.split(tensor)
             parts = tuple(split[segment.name] for segment in layout.segments)
