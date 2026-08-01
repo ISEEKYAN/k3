@@ -25,11 +25,15 @@ from mlite_k3.lite.checkpoint import (
 def _single_rank_parallel_state():
     return SimpleNamespace(
         pp_size=1,
+        pp_rank=0,
         tp_size=1,
+        tp_rank=0,
         tp_group=None,
         ep_size=1,
+        ep_rank=0,
         ep_group=None,
         etp_size=1,
+        etp_rank=0,
         etp_group=None,
     )
 
@@ -543,7 +547,81 @@ def test_k3_export_delegates_to_shared_hfweights_primitive(monkeypatch):
     assert args[0] is model
     assert isinstance(args[1], K3WeightSpec)
     assert args[2] is ps
-    assert kwargs == {"vocab_size": 64}
+    assert kwargs == {"vocab_size": 64, "rank0_only": False}
+
+
+def _model_with_preserved_mxfp4_encoding():
+    manifest = K3CheckpointManifest(
+        quantization=K3QuantizationMetadata(
+            format="mxfp4-pack-quantized",
+            group_size=32,
+            num_bits=4,
+            scale_dtype="torch.uint8",
+            ignored_modules=frozenset(),
+        ),
+        weights=WeightIndexAudit(quantized_weights=3, plain_tensors=0, shards=1),
+    )
+    spec = K3WeightSpec(_TinyConfig(), manifest=manifest)
+    native_name = "layers.1.moe.experts.fc2.weight0"
+    packed = torch.arange(32 * 16, dtype=torch.int32).to(torch.uint8).view(32, 16)
+    scale = torch.full((32, 1), 121, dtype=torch.uint8)
+    logical = spec.hf_to_native(native_name, [packed, scale]).to(torch.bfloat16)
+
+    class TinyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layer_indices = [1]
+            layer = nn.Module()
+            layer.moe = nn.Module()
+            layer.moe.experts = nn.Module()
+            layer.moe.experts.fc2 = _TinyGroupedLinear(logical.shape)
+            self.layers = nn.ModuleList([layer])
+            layer.moe.experts.fc2.weight0.data.copy_(logical)
+
+    model = TinyModel()
+    checkpoint._attach_mxfp4_checkpoint_adapter(
+        model,
+        spec,
+        _single_rank_parallel_state(),
+    )
+
+    return model, packed, scale
+
+
+def test_mxfp4_export_reuses_model_owned_release_encoding_bit_exactly():
+    model, packed, scale = _model_with_preserved_mxfp4_encoding()
+    exported = dict(
+        export_hf_weights(
+            model,
+            _TinyConfig(),
+            _single_rank_parallel_state(),
+            target="mxfp4",
+            cpu=True,
+        )
+    )
+    prefix = "language_model.model.layers.1.block_sparse_moe.experts.0.w2.weight"
+    assert torch.equal(exported[f"{prefix}_packed"], packed)
+    assert torch.equal(exported[f"{prefix}_scale"], scale)
+
+
+def test_mxfp4_export_requantizes_after_model_weight_changes():
+    model, packed, scale = _model_with_preserved_mxfp4_encoding()
+    model.layers[0].moe.experts.fc2.weight0.data.fill_(1.0)
+
+    exported = dict(
+        export_hf_weights(
+            model,
+            _TinyConfig(),
+            _single_rank_parallel_state(),
+            target="mxfp4",
+            cpu=True,
+        )
+    )
+    prefix = "language_model.model.layers.1.block_sparse_moe.experts.0.w2.weight"
+    assert not (
+        torch.equal(exported[f"{prefix}_packed"], packed)
+        and torch.equal(exported[f"{prefix}_scale"], scale)
+    )
 
 
 def test_k3_weight_spec_removes_release_a_log_zero_padding():

@@ -8,9 +8,10 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 import torch
+import torch.nn as nn
 
 from megatron.lite.primitive.ckpt.fused_weights import (
     FusedWeightLayout,
@@ -38,6 +39,9 @@ _ROUTED_MXFP4_WEIGHT = re.compile(
     r"\.w[123]\.weight$"
 )
 _GROUPED_EXPERT_WEIGHT = re.compile(r"^(.*\.moe\.experts\.fc[12]\.weight)(\d+)$")
+_MXFP4_ADAPTER_EXPERT = re.compile(
+    r"^(layers\.\d+\.moe\.mxfp4\.w[123]_(?:packed|scale)\.weight)(\d+)$"
+)
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,7 @@ class K3WeightSpec:
         self.manifest = manifest
         self._mapping: dict[str, list[str]] | None = None
         self._fusion_layouts: dict[str, FusedWeightLayout] = {}
+        self._raw_mxfp4_sources: dict[str, tuple[tuple[str, torch.Tensor], ...]] = {}
 
     @property
     def kda_rollout_layout(self) -> FusedWeightLayout:
@@ -325,6 +330,10 @@ class K3WeightSpec:
         if self._uses_release_mxfp4 and self.is_expert(native_name):
             if len(hf_tensors) % 2:
                 raise ValueError(f"{native_name!r} requires MXFP4 packed/scale pairs")
+            self._raw_mxfp4_sources[native_name] = tuple(
+                (source_name, tensor.detach())
+                for source_name, tensor in zip(expected, hf_tensors, strict=True)
+            )
             pairs = tuple(
                 QuantizedWeight(packed, scale)
                 for packed, scale in zip(
@@ -506,6 +515,163 @@ class K3WeightSpec:
         if match is None:
             raise ValueError(f"{native_name!r} is not a K3 grouped-expert weight")
         return f"{match.group(1)}{local_idx}"
+
+
+class _K3MXFP4CheckpointAdapter(nn.Module):
+    """Model-owned raw release encoding used while its logical weight is unchanged."""
+
+    def __init__(self, layer_indices: Iterable[int]):
+        super().__init__()
+        self.layer_indices = list(layer_indices)
+        self.source_map: dict[str, str] = {}
+
+    def add_source(
+        self,
+        *,
+        global_name: str,
+        local_name: str,
+        source_name: str,
+        tensor: torch.Tensor,
+    ) -> None:
+        module: nn.Module = self
+        parts = local_name.split(".")
+        for part in parts[:-1]:
+            child = module._modules.get(part)
+            if child is None:
+                child = nn.Module()
+                module.add_module(part, child)
+            module = child
+        module.register_buffer(parts[-1], tensor.detach(), persistent=True)
+        self.source_map[global_name] = source_name
+
+
+class _K3MXFP4CheckpointAdapterSpec:
+    """Map model-owned raw buffers through MLite's ordinary ETP/EP/PP gather."""
+
+    def __init__(self, source_map: Mapping[str, str], num_experts: int):
+        self._source_map = dict(source_map)
+        self.num_experts = int(num_experts)
+
+    def weight_map(self) -> dict[str, list[str]]:
+        return {native: [source] for native, source in self._source_map.items()}
+
+    def hf_to_native(
+        self, native_name: str, hf_tensors: list[torch.Tensor]
+    ) -> torch.Tensor:
+        if len(hf_tensors) != 1:
+            raise ValueError(f"{native_name!r} requires one raw MXFP4 component")
+        return hf_tensors[0]
+
+    def native_to_hf(
+        self, native_name: str, tensor: torch.Tensor
+    ) -> list[tuple[str, torch.Tensor]]:
+        try:
+            source_name = self._source_map[native_name]
+        except KeyError as error:
+            raise KeyError(
+                f"unknown K3 MXFP4 adapter tensor {native_name!r}"
+            ) from error
+        return [(source_name, tensor)]
+
+    @staticmethod
+    def qkv_spec(native_name: str) -> None:
+        del native_name
+        return None
+
+    @staticmethod
+    def tp_spec(native_name: str) -> tuple[int, int]:
+        return (1 if ".w2_" in native_name else 0, 1)
+
+    @staticmethod
+    def is_expert(native_name: str) -> bool:
+        return _MXFP4_ADAPTER_EXPERT.fullmatch(native_name) is not None
+
+    @staticmethod
+    def expert_global_id(native_name: str) -> int | None:
+        match = _MXFP4_ADAPTER_EXPERT.fullmatch(native_name)
+        return int(match.group(2)) if match is not None else None
+
+    @staticmethod
+    def expert_local_name(native_name: str, local_idx: int) -> str:
+        match = _MXFP4_ADAPTER_EXPERT.fullmatch(native_name)
+        if match is None:
+            raise ValueError(f"{native_name!r} is not a K3 MXFP4 adapter tensor")
+        return f"{match.group(1)}{local_idx}"
+
+
+def _split_mxfp4_source_for_etp(
+    tensor: torch.Tensor,
+    source_name: str,
+    ps: Any,
+) -> torch.Tensor:
+    etp_size = int(getattr(ps, "etp_size", 1))
+    if etp_size == 1:
+        return tensor
+    split_dim = 1 if ".w2.weight_" in source_name else 0
+    if tensor.size(split_dim) % etp_size:
+        raise ValueError(
+            f"{source_name!r} dimension {split_dim}={tensor.size(split_dim)} "
+            f"is not divisible by ETP={etp_size}"
+        )
+    return tensor.chunk(etp_size, dim=split_dim)[int(ps.etp_rank)].contiguous()
+
+
+def _attach_mxfp4_checkpoint_adapter(
+    model: nn.Module,
+    spec: K3WeightSpec,
+    ps: Any,
+) -> None:
+    """Attach the exact release pairs captured by ``spec.hf_to_native``."""
+    from megatron.lite.primitive.ckpt.hf_weights import unwrap_model
+
+    base_model = unwrap_model(model)
+    if hasattr(base_model, "_k3_mxfp4_checkpoint_adapter"):
+        raise RuntimeError("K3 model already owns an MXFP4 checkpoint adapter")
+    layer_indices = list(
+        getattr(base_model, "layer_indices", range(spec.config.num_hidden_layers))
+    )
+    global_to_local = {
+        global_index: local_index
+        for local_index, global_index in enumerate(layer_indices)
+    }
+    adapter = _K3MXFP4CheckpointAdapter(layer_indices)
+    experts_per_rank = spec.num_experts // int(getattr(ps, "ep_size", 1))
+    expert_start = int(getattr(ps, "ep_rank", 0)) * experts_per_rank
+    for native_name, sources in spec._raw_mxfp4_sources.items():
+        match = _GROUPED_EXPERT_WEIGHT.fullmatch(native_name)
+        if match is None:
+            raise AssertionError(f"captured non-expert MXFP4 source {native_name!r}")
+        layer_match = re.match(r"layers\.(\d+)\.", native_name)
+        if layer_match is None:
+            raise AssertionError(f"captured MXFP4 source without layer {native_name!r}")
+        global_layer = int(layer_match.group(1))
+        global_expert = int(match.group(2))
+        if global_layer not in global_to_local:
+            continue
+        local_expert = global_expert - expert_start
+        if not 0 <= local_expert < experts_per_rank:
+            continue
+        for source_name, tensor in sources:
+            source_match = re.search(r"\.(w[123])\.weight_(packed|scale)$", source_name)
+            if source_match is None:
+                raise AssertionError(f"unexpected K3 MXFP4 source {source_name!r}")
+            projection, component = source_match.groups()
+            global_name = (
+                f"layers.{global_layer}.moe.mxfp4.{projection}_{component}."
+                f"weight{global_expert}"
+            )
+            local_name = (
+                f"layers.{global_to_local[global_layer]}.moe.mxfp4."
+                f"{projection}_{component}.weight{local_expert}"
+            )
+            adapter.add_source(
+                global_name=global_name,
+                local_name=local_name,
+                source_name=source_name,
+                tensor=_split_mxfp4_source_for_etp(tensor, source_name, ps),
+            )
+    if adapter.source_map:
+        base_model.add_module("_k3_mxfp4_checkpoint_adapter", adapter)
 
 
 def _k3_local_shape(
@@ -914,6 +1080,90 @@ def _export_mxfp4_weights(
         yield f"{hf_name}_scale", scale.view(torch.uint8)
 
 
+def _next_preserved_mxfp4_pair(
+    weights: Iterator[tuple[str, torch.Tensor]],
+    base_name: str,
+) -> QuantizedWeight:
+    try:
+        packed_name, packed = next(weights)
+        scale_name, scale = next(weights)
+    except StopIteration as error:
+        raise RuntimeError(
+            f"model-owned MXFP4 adapter is missing {base_name!r}"
+        ) from error
+    expected_packed = f"{base_name}_packed"
+    expected_scale = f"{base_name}_scale"
+    if (packed_name, scale_name) != (expected_packed, expected_scale):
+        raise RuntimeError(
+            "model-owned MXFP4 adapter order mismatch: "
+            f"expected={(expected_packed, expected_scale)!r}, "
+            f"got={(packed_name, scale_name)!r}"
+        )
+    return QuantizedWeight(packed, scale)
+
+
+def _export_with_preserved_mxfp4(
+    logical_weights: Iterator[tuple[str, torch.Tensor]],
+    preserved_weights: Iterator[tuple[str, torch.Tensor]],
+) -> Iterator[tuple[str, torch.Tensor]]:
+    """Reuse original pairs iff they still decode to the gathered model value."""
+    from mlite_k3.primitive.mxfp4 import dequantize_mxfp4
+    from megatron.lite.primitive.quantization.mxfp4 import quantize_mxfp4
+
+    for hf_name, hf_tensor in logical_weights:
+        if not _ROUTED_MXFP4_WEIGHT.fullmatch(hf_name):
+            yield hf_name, hf_tensor
+            continue
+        preserved = _next_preserved_mxfp4_pair(preserved_weights, hf_name)
+        packed_i8 = (
+            preserved.packed
+            if preserved.packed.dtype == torch.int8
+            else preserved.packed.view(torch.int8)
+        )
+        decoded = dequantize_mxfp4(
+            packed_i8,
+            preserved.scale.view(torch.float8_e8m0fnu),
+        ).to(dtype=hf_tensor.dtype)
+        if torch.equal(decoded, hf_tensor):
+            packed, scale = preserved.packed, preserved.scale
+        else:
+            packed, scale = quantize_mxfp4(hf_tensor)
+            scale = scale.view(torch.uint8)
+        yield f"{hf_name}_packed", packed
+        yield f"{hf_name}_scale", scale
+    try:
+        unexpected_name, _ = next(preserved_weights)
+    except StopIteration:
+        return
+    raise RuntimeError(
+        f"model-owned MXFP4 adapter has unexpected trailing tensor {unexpected_name!r}"
+    )
+
+
+def _mxfp4_checkpoint_adapters(
+    model: torch.nn.Module | list[torch.nn.Module],
+) -> list[_K3MXFP4CheckpointAdapter] | None:
+    from megatron.lite.primitive.ckpt.hf_weights import unwrap_model
+
+    if isinstance(model, nn.ModuleList):
+        chunks = list(model)
+    elif isinstance(model, list):
+        chunks = model
+    else:
+        chunks = [model]
+    adapters = [
+        getattr(unwrap_model(chunk), "_k3_mxfp4_checkpoint_adapter", None)
+        for chunk in chunks
+    ]
+    if not any(adapter is not None for adapter in adapters):
+        return None
+    if any(adapter is None for adapter in adapters):
+        raise RuntimeError(
+            "K3 MXFP4 checkpoint adapter is missing from one model chunk"
+        )
+    return list(adapters)
+
+
 def export_hf_weights(
     model: torch.nn.Module | list[torch.nn.Module],
     config: Any,
@@ -929,17 +1179,53 @@ def export_hf_weights(
 
     if target not in ("hf", "bf16", "mxfp4"):
         raise ValueError("target must be 'hf', 'bf16', or 'mxfp4'")
+    requested_rank0_only = bool(kwargs.pop("rank0_only", False))
     weights = export_with_primitive(
         model,
         K3WeightSpec(config),
         ps,
         vocab_size=config.vocab_size,
+        rank0_only=False,
         **kwargs,
     )
     if target in ("hf", "bf16"):
-        yield from weights
+        for item in weights:
+            if (
+                not requested_rank0_only
+                or not torch.distributed.is_initialized()
+                or torch.distributed.get_rank() == 0
+            ):
+                yield item
         return
-    yield from _export_mxfp4_weights(weights)
+    adapters = _mxfp4_checkpoint_adapters(model)
+    if adapters is None:
+        yield from _export_mxfp4_weights(weights)
+        return
+    source_map = {
+        native_name: source_name
+        for adapter in adapters
+        for native_name, source_name in adapter.source_map.items()
+    }
+    adapter_spec = _K3MXFP4CheckpointAdapterSpec(source_map, config.num_experts)
+    adapter_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key in {"cpu", "buffer_max_size_bytes"}
+    }
+    preserved = export_with_primitive(
+        adapters,
+        adapter_spec,
+        ps,
+        **adapter_kwargs,
+    )
+    exported = _export_with_preserved_mxfp4(iter(weights), iter(preserved))
+    for item in exported:
+        if (
+            not requested_rank0_only
+            or not torch.distributed.is_initialized()
+            or torch.distributed.get_rank() == 0
+        ):
+            yield item
 
 
 def _checkpoint_tensor(name: str, tensor: torch.Tensor) -> tuple[str, torch.Tensor]:
@@ -1102,6 +1388,7 @@ def load_hf_weights(
         ps,
         vocab_size=config.vocab_size,
     )
+    _attach_mxfp4_checkpoint_adapter(model, spec, ps)
     return manifest
 
 
