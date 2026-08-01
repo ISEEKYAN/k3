@@ -272,6 +272,10 @@ class _TinyConfig:
     vocab_size = 64
     kda_num_heads = 3
     kda_head_dim = 4
+    intermediate_size = 3
+    shared_expert_intermediate_size = 3
+    moe_intermediate_size = 3
+    routed_expert_hidden_size = 4
 
     @staticmethod
     def attention_type(layer_index: int) -> str:
@@ -361,6 +365,50 @@ def test_k3_weight_spec_implements_hf_weights_parallel_contract():
     ]
 
 
+def test_k3_declares_the_rollout_kda_fusion_geometry() -> None:
+    layout = K3WeightSpec(_TinyConfig()).kda_rollout_layout
+
+    assert tuple(segment.name for segment in layout.segments) == (
+        "q",
+        "k",
+        "v",
+        "g",
+        "f_a",
+        "b",
+    )
+    assert tuple(segment.rows for segment in layout.segments) == (12, 12, 12, 12, 4, 3)
+    assert tuple(segment.replicated for segment in layout.segments) == (
+        False,
+        False,
+        False,
+        False,
+        True,
+        False,
+    )
+
+
+def test_k3_rollout_layout_exports_and_splits_every_segment_exactly() -> None:
+    class TinyExportConfig(_TinyConfig):
+        num_hidden_layers = 1
+        kda_num_heads = 2
+        kda_head_dim = 8
+
+    layout = K3WeightSpec(TinyExportConfig()).kda_rollout_layout
+    source = {
+        segment.name: torch.full((segment.rows, 3), index, dtype=torch.int32)
+        for index, segment in enumerate(layout.segments, start=1)
+    }
+
+    fused = layout.fuse_ordered(
+        tuple((segment.name, source[segment.name]) for segment in layout.segments)
+    )
+    restored = layout.split(fused)
+
+    assert tuple(restored) == ("q", "k", "v", "g", "f_a", "b")
+    for segment in layout.segments:
+        assert torch.equal(restored[segment.name], source[segment.name])
+
+
 def test_k3_weight_spec_materializes_mxfp4_sources_from_manifest():
     manifest = K3CheckpointManifest(
         quantization=K3QuantizationMetadata(
@@ -383,11 +431,11 @@ def test_k3_weight_spec_materializes_mxfp4_sources_from_manifest():
         "language_model.model.layers.1.block_sparse_moe.experts.0.w3.weight_scale",
     ]
 
-    packed = torch.zeros(2, 16, dtype=torch.uint8)
-    scale = torch.full((2, 1), 127, dtype=torch.uint8)
+    packed = torch.zeros(3, 16, dtype=torch.uint8)
+    scale = torch.full((3, 1), 127, dtype=torch.uint8)
     materialized = spec.hf_to_native(native, [packed, scale, packed, scale])
 
-    assert materialized.shape == (4, 32)
+    assert materialized.shape == (6, 32)
     assert materialized.dtype == torch.float32
 
 
@@ -638,6 +686,8 @@ class _ExpertConfig:
     num_hidden_layers = 1
     first_k_dense_replace = 0
     num_experts = 1
+    shared_expert_intermediate_size = 3
+    moe_intermediate_size = 3
 
     @staticmethod
     def attention_type(layer_index: int) -> str:

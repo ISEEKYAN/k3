@@ -78,6 +78,9 @@ class _TinyConfig:
     num_hidden_layers = 3
     first_k_dense_replace = 1
     num_experts = 2
+    intermediate_size = 2
+    shared_expert_intermediate_size = 2
+    moe_intermediate_size = 2
 
     @staticmethod
     def attention_type(layer_index: int) -> str:

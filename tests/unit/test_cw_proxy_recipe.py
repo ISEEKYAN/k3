@@ -106,15 +106,17 @@ def test_training_environment_preserves_three_pollution_boundaries():
     assert "CC CXX CFLAGS CPPFLAGS CXXFLAGS LDFLAGS" in env
 
 
-def test_jit_cache_is_job_local_keyed_and_fail_loud():
+def test_training_jit_cache_is_stable_keyed_and_fail_loud():
     env = read("k3_training_env.sh")
     generate = read("run_proxy_generate.sbatch")
 
     assert ': "${SLURM_JOB_ID:?K3 runtime must run under Slurm}"' in env
-    assert 'K3_NODE_CACHE_ROOT="${K3_NODE_CACHE_ROOT:-/tmp/k3-${SLURM_JOB_ID}}"' in env
-    assert 'cache_dir="${K3_NODE_CACHE_ROOT}/${fingerprint}"' in env
-    assert 'cache_dir="${K3_CACHE_ROOT}/${fingerprint}"' not in env
-    assert "FATAL JIT cache must be node-local under /tmp" in env
+    assert (
+        ': "${K3_CACHE_ROOT:?set K3_CACHE_ROOT to a stable shared cache root}"' in env
+    )
+    assert 'cache_dir="${K3_CACHE_ROOT}/${fingerprint}"' in env
+    assert "K3_NODE_CACHE_ROOT" not in env
+    assert "FATAL JIT cache root must be a stable Lustre path" in env
     assert 'assert_jit_cache_contract.py"' in env
     assert "K3_TRAINING_IMAGE" in env
     assert "training_image_stat" in env

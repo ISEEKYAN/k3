@@ -17,32 +17,36 @@ def load_contract_module():
     return module
 
 
-def test_accepts_one_job_scoped_node_local_cache_tree():
+def test_accepts_one_fingerprint_scoped_stable_cache_tree():
     module = load_contract_module()
-    root = "/tmp/k3-14776736/fingerprint"
-    env = {"SLURM_JOB_ID": "14776736"}
+    cache_root = "/lustre/shared/k3/jit-cache"
+    fingerprint = "ae4bf8099e118ce4b3a9"
+    root = f"{cache_root}/{fingerprint}"
+    env = {"K3_CACHE_ROOT": cache_root, "K3_JIT_CACHE_FINGERPRINT": fingerprint}
     env.update(
         {name: f"{root}/{suffix}" for name, suffix in module.CACHE_PATHS.items()}
     )
 
-    assert module.assert_job_local_cache(env) == Path(root)
+    assert module.assert_stable_cache(env) == Path(root)
 
 
 @pytest.mark.parametrize(
     "bad_path",
     (
-        "/lustre/shared/jit-cache/torchinductor",
-        "/tmp/k3-older-job/fingerprint/torchinductor",
+        "/lustre/shared/k3/jit-cache/other-fingerprint/torchinductor",
+        "/tmp/k3-current-job/fingerprint/torchinductor",
     ),
 )
-def test_rejects_shared_or_cross_job_cache_paths(bad_path):
+def test_rejects_paths_outside_the_declared_stable_fingerprint(bad_path):
     module = load_contract_module()
-    root = "/tmp/k3-14776736/fingerprint"
-    env = {"SLURM_JOB_ID": "14776736"}
+    cache_root = "/lustre/shared/k3/jit-cache"
+    fingerprint = "ae4bf8099e118ce4b3a9"
+    root = f"{cache_root}/{fingerprint}"
+    env = {"K3_CACHE_ROOT": cache_root, "K3_JIT_CACHE_FINGERPRINT": fingerprint}
     env.update(
         {name: f"{root}/{suffix}" for name, suffix in module.CACHE_PATHS.items()}
     )
     env["TORCHINDUCTOR_CACHE_DIR"] = bad_path
 
     with pytest.raises(RuntimeError, match="TORCHINDUCTOR_CACHE_DIR"):
-        module.assert_job_local_cache(env)
+        module.assert_stable_cache(env)

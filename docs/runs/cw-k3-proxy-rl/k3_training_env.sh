@@ -9,6 +9,7 @@ source "${recipe_dir}/image.env"
 : "${MLITE_ROOT:?set MLITE_ROOT to the pinned Megatron-LM checkout}"
 : "${VERL_ROOT:?set VERL_ROOT to the pinned VERL checkout}"
 : "${VERL_DEPS_SITE:?set VERL_DEPS_SITE to the pinned VERL dependency site}"
+: "${K3_CACHE_ROOT:?set K3_CACHE_ROOT to a stable shared cache root}"
 : "${SLURM_JOB_ID:?K3 runtime must run under Slurm}"
 : "${MEGATRON_ROOT:=${K3_MEGATRON_ROOT}}"
 : "${FLA_SITE:=${K3_FLA_SITE}}"
@@ -163,17 +164,16 @@ fingerprint_input="$(
     "${PYTHONPATH}"
 )"
 fingerprint=$(printf '%s' "${fingerprint_input}" | sha256sum | cut -c1-20)
-K3_NODE_CACHE_ROOT="${K3_NODE_CACHE_ROOT:-/tmp/k3-${SLURM_JOB_ID}}"
-case "${K3_NODE_CACHE_ROOT}" in
-  /tmp | /tmp/*) ;;
+case "${K3_CACHE_ROOT}" in
+  /lustre | /lustre/*) ;;
   *)
     echo \
-      "FATAL JIT cache must be node-local under /tmp: ${K3_NODE_CACHE_ROOT}" \
+      "FATAL JIT cache root must be a stable Lustre path: ${K3_CACHE_ROOT}" \
       >&2
     exit 2
     ;;
 esac
-cache_dir="${K3_NODE_CACHE_ROOT}/${fingerprint}"
+cache_dir="${K3_CACHE_ROOT}/${fingerprint}"
 manifest="${cache_dir}/fingerprint.txt"
 mkdir -p "${cache_dir}"
 if [[ -e "${manifest}" ]]; then
