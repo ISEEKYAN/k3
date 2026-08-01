@@ -604,6 +604,49 @@ def test_mxfp4_export_reuses_model_owned_release_encoding_bit_exactly():
     assert torch.equal(exported[f"{prefix}_scale"], scale)
 
 
+def test_mxfp4_export_pairs_components_across_expert_grouped_stream_order():
+    from mlite_k3.primitive.mxfp4 import dequantize_mxfp4
+
+    bases = [
+        f"language_model.model.layers.1.block_sparse_moe.experts.{expert}.w2.weight"
+        for expert in range(2)
+    ]
+    packed = [
+        torch.arange(32 * 16, dtype=torch.int32)
+        .add(expert)
+        .to(torch.uint8)
+        .view(32, 16)
+        for expert in range(2)
+    ]
+    scale = [
+        torch.full((32, 1), 121 + expert, dtype=torch.uint8) for expert in range(2)
+    ]
+    logical = [
+        dequantize_mxfp4(
+            packed_tensor.view(torch.int8),
+            scale_tensor.view(torch.float8_e8m0fnu),
+        ).to(torch.bfloat16)
+        for packed_tensor, scale_tensor in zip(packed, scale, strict=True)
+    ]
+    logical_stream = iter(zip(bases, logical, strict=True))
+    preserved_stream = iter(
+        [
+            (f"{bases[0]}_packed", packed[0]),
+            (f"{bases[1]}_packed", packed[1]),
+            (f"{bases[0]}_scale", scale[0]),
+            (f"{bases[1]}_scale", scale[1]),
+        ]
+    )
+
+    exported = dict(
+        checkpoint._export_with_preserved_mxfp4(logical_stream, preserved_stream)
+    )
+
+    for base, packed_tensor, scale_tensor in zip(bases, packed, scale, strict=True):
+        assert torch.equal(exported[f"{base}_packed"], packed_tensor)
+        assert torch.equal(exported[f"{base}_scale"], scale_tensor)
+
+
 def test_mxfp4_export_requantizes_after_model_weight_changes():
     model, packed, scale = _model_with_preserved_mxfp4_encoding()
     model.layers[0].moe.experts.fc2.weight0.data.fill_(1.0)

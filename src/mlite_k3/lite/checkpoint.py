@@ -1082,24 +1082,35 @@ def _export_mxfp4_weights(
 
 def _next_preserved_mxfp4_pair(
     weights: Iterator[tuple[str, torch.Tensor]],
+    pending: dict[str, dict[str, torch.Tensor]],
     base_name: str,
 ) -> QuantizedWeight:
-    try:
-        packed_name, packed = next(weights)
-        scale_name, scale = next(weights)
-    except StopIteration as error:
-        raise RuntimeError(
-            f"model-owned MXFP4 adapter is missing {base_name!r}"
-        ) from error
-    expected_packed = f"{base_name}_packed"
-    expected_scale = f"{base_name}_scale"
-    if (packed_name, scale_name) != (expected_packed, expected_scale):
-        raise RuntimeError(
-            "model-owned MXFP4 adapter order mismatch: "
-            f"expected={(expected_packed, expected_scale)!r}, "
-            f"got={(packed_name, scale_name)!r}"
+    while True:
+        components = pending.get(base_name, {})
+        if "packed" in components and "scale" in components:
+            del pending[base_name]
+            return QuantizedWeight(components["packed"], components["scale"])
+        try:
+            name, tensor = next(weights)
+        except StopIteration as error:
+            raise RuntimeError(
+                f"model-owned MXFP4 adapter is missing {base_name!r}"
+            ) from error
+        component = next(
+            (suffix for suffix in ("packed", "scale") if name.endswith(f"_{suffix}")),
+            None,
         )
-    return QuantizedWeight(packed, scale)
+        if component is None:
+            raise RuntimeError(
+                f"model-owned MXFP4 adapter emitted invalid tensor {name!r}"
+            )
+        component_base = name[: -(len(component) + 1)]
+        buffered = pending.setdefault(component_base, {})
+        if component in buffered:
+            raise RuntimeError(
+                f"model-owned MXFP4 adapter emitted duplicate tensor {name!r}"
+            )
+        buffered[component] = tensor
 
 
 def _export_with_preserved_mxfp4(
@@ -1110,11 +1121,12 @@ def _export_with_preserved_mxfp4(
     from mlite_k3.primitive.mxfp4 import dequantize_mxfp4
     from megatron.lite.primitive.quantization.mxfp4 import quantize_mxfp4
 
+    pending: dict[str, dict[str, torch.Tensor]] = {}
     for hf_name, hf_tensor in logical_weights:
         if not _ROUTED_MXFP4_WEIGHT.fullmatch(hf_name):
             yield hf_name, hf_tensor
             continue
-        preserved = _next_preserved_mxfp4_pair(preserved_weights, hf_name)
+        preserved = _next_preserved_mxfp4_pair(preserved_weights, pending, hf_name)
         packed_i8 = (
             preserved.packed
             if preserved.packed.dtype == torch.int8
@@ -1131,6 +1143,11 @@ def _export_with_preserved_mxfp4(
             scale = scale.view(torch.uint8)
         yield f"{hf_name}_packed", packed
         yield f"{hf_name}_scale", scale
+    if pending:
+        unexpected_name = sorted(pending)[0]
+        raise RuntimeError(
+            f"model-owned MXFP4 adapter has unexpected buffered tensor {unexpected_name!r}"
+        )
     try:
         unexpected_name, _ = next(preserved_weights)
     except StopIteration:
