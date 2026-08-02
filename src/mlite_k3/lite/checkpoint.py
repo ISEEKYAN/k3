@@ -635,6 +635,7 @@ def _attach_mxfp4_checkpoint_adapter(
         for local_index, global_index in enumerate(layer_indices)
     }
     adapter = _K3MXFP4CheckpointAdapter(layer_indices)
+    source_templates: dict[str, tuple[str, str]] = {}
     experts_per_rank = spec.num_experts // int(getattr(ps, "ep_size", 1))
     expert_start = int(getattr(ps, "ep_rank", 0)) * experts_per_rank
     for native_name, sources in spec._raw_mxfp4_sources.items():
@@ -669,6 +670,20 @@ def _attach_mxfp4_checkpoint_adapter(
                 local_name=local_name,
                 source_name=source_name,
                 tensor=_split_mxfp4_source_for_etp(tensor, source_name, ps),
+            )
+            adapter_match = _MXFP4_ADAPTER_EXPERT.fullmatch(global_name)
+            if adapter_match is None:
+                raise AssertionError(
+                    f"unexpected K3 MXFP4 adapter name {global_name!r}"
+                )
+            source_match = re.fullmatch(r"(.*\.experts\.)\d+(\..*)", source_name)
+            if source_match is None:
+                raise AssertionError(f"unexpected K3 MXFP4 source {source_name!r}")
+            source_templates[adapter_match.group(1)] = source_match.groups()
+    for adapter_prefix, (source_prefix, source_suffix) in source_templates.items():
+        for expert in range(spec.num_experts):
+            adapter.source_map[f"{adapter_prefix}{expert}"] = (
+                f"{source_prefix}{expert}{source_suffix}"
             )
     if adapter.source_map:
         base_model.add_module("_k3_mxfp4_checkpoint_adapter", adapter)

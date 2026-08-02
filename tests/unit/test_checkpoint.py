@@ -604,6 +604,47 @@ def test_mxfp4_export_reuses_model_owned_release_encoding_bit_exactly():
     assert torch.equal(exported[f"{prefix}_scale"], scale)
 
 
+def test_mxfp4_adapter_maps_every_global_expert_on_each_ep_rank():
+    class TwoExpertConfig(_TinyConfig):
+        num_experts = 2
+
+    manifest = K3CheckpointManifest(
+        quantization=K3QuantizationMetadata(
+            format="mxfp4-pack-quantized",
+            group_size=32,
+            num_bits=4,
+            scale_dtype="torch.uint8",
+            ignored_modules=frozenset(),
+        ),
+        weights=WeightIndexAudit(quantized_weights=6, plain_tensors=0, shards=1),
+    )
+    spec = K3WeightSpec(TwoExpertConfig(), manifest=manifest)
+    native_name = "layers.1.moe.experts.fc2.weight1"
+    packed = torch.zeros(32, 16, dtype=torch.uint8)
+    scale = torch.full((32, 1), 121, dtype=torch.uint8)
+    spec.hf_to_native(native_name, [packed, scale])
+
+    model = nn.Module()
+    model.layer_indices = [1]
+    checkpoint._attach_mxfp4_checkpoint_adapter(
+        model,
+        spec,
+        SimpleNamespace(ep_size=2, ep_rank=1, etp_size=1, etp_rank=0),
+    )
+
+    adapter = model._k3_mxfp4_checkpoint_adapter
+    assert set(adapter.source_map) == {
+        "layers.1.moe.mxfp4.w2_packed.weight0",
+        "layers.1.moe.mxfp4.w2_scale.weight0",
+        "layers.1.moe.mxfp4.w2_packed.weight1",
+        "layers.1.moe.mxfp4.w2_scale.weight1",
+    }
+    assert dict(adapter.named_buffers()).keys() == {
+        "layers.0.moe.mxfp4.w2_packed.weight0",
+        "layers.0.moe.mxfp4.w2_scale.weight0",
+    }
+
+
 def test_mxfp4_export_pairs_components_across_expert_grouped_stream_order():
     from mlite_k3.primitive.mxfp4 import dequantize_mxfp4
 
