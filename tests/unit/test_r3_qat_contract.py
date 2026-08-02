@@ -272,6 +272,17 @@ def test_latest_mlite_imports_the_distributed_k3_model():
     assert K3FullRankGatedDeltaNet.__name__ == "K3FullRankGatedDeltaNet"
 
 
+def test_kda_restores_activation_dtype_before_output_projection():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).parents[2] / "src/mlite_k3/primitive/kda_parallel.py"
+    ).read_text()
+
+    assert "def _output_projection(" in source
+    assert source.count("return self._output_projection(output, x)") == 2
+
+
 def test_mxfp4_qat_only_parametrizes_routed_expert_linears():
     bundle = build_model(
         _tiny_config(),
