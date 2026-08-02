@@ -43,12 +43,20 @@ def _tiny_config() -> K3Config:
 def test_protocol_exports_shared_zigzag_r3_contract():
     from megatron.lite.model import protocol_utils
 
-    assert protocol.router_replay_roots is protocol_utils.router_replay_roots
     assert protocol.pack_routed_experts is protocol_utils.pack_routed_experts
     assert protocol.pack_r3_replay_mask is protocol_utils.pack_r3_replay_mask
     assert (
         protocol.unpack_thd_forward_output is protocol_utils.unpack_thd_forward_output
     )
+
+
+def test_k3_replay_roots_are_owned_by_k3_decoder_topology():
+    layer_a, layer_b = torch.nn.Linear(1, 1), torch.nn.Linear(1, 1)
+    chunk = SimpleNamespace(layers=torch.nn.ModuleList([layer_a, layer_b]))
+
+    assert protocol.router_replay_roots(chunk) == [layer_a, layer_b]
+    fallback = torch.nn.Linear(1, 1)
+    assert protocol.router_replay_roots(fallback) == [fallback]
 
 
 def test_k3_parallel_kda_imports_against_latest_mlite():
@@ -139,7 +147,7 @@ def test_unproven_ep_axis_is_not_reported_as_validated():
 
 def test_parallel_axis_evidence_is_explicit_and_traceable():
     dimensions = {"tp": 1, "ep": 2, "etp": 1, "pp": 1, "cp": 1}
-    source = f"job:12345#sha256:{'a' * 64}"
+    source = f"job:12345:assertion:smoke#sha256:{'a' * 64}"
 
     axes, evidence = protocol._resolve_validated_axes(
         dimensions,

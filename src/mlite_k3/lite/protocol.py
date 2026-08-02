@@ -18,7 +18,6 @@ from mlite_k3.validation_schema import (
 from megatron.lite.model.protocol_utils import (
     pack_r3_replay_mask,
     pack_routed_experts,
-    router_replay_roots,
     unpack_thd_forward_output,
 )
 
@@ -236,6 +235,16 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
 
 def vocab_size(model_cfg: K3Config) -> int:
     return model_cfg.vocab_size
+
+
+def router_replay_roots(chunk: torch.nn.Module) -> list[torch.nn.Module]:
+    """Return this pipeline chunk's decoder layers for R3 router discovery."""
+
+    model = getattr(chunk, "model", chunk)
+    layers = getattr(model, "layers", None)
+    if layers is None:
+        return [chunk]
+    return list(layers)
 
 
 def load_hf_weights(
