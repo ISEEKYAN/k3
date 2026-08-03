@@ -23,6 +23,7 @@ kda = ["flash-linear-attention>=0.5.0"]
 [project.scripts]
 k3-validate-checkpoint = "mlite_k3.checkpoint_validation:main"
 k3-validation-harness = "mlite_k3.validation_harness:main"
+k3-rl-finite-gate = "mlite_k3.rl_finite_gate:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
