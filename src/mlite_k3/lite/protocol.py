@@ -61,7 +61,6 @@ class ImplConfig:
     use_thd: bool = False
     use_deepep: bool = False
     deterministic: bool = False
-    grad_reduce_in_fp32: bool = True
     moe_router_fusion: bool = False
     kda_cp_mode: str = "headwise"
     qat: QATSpec | dict[str, Any] | None = None
@@ -187,7 +186,6 @@ def _build_dist_opt_optimizer(
         model_name="k3",
         is_expert=is_expert_param,
         deterministic=impl_cfg.deterministic,
-        grad_reduce_in_fp32=impl_cfg.grad_reduce_in_fp32,
     )
 
 

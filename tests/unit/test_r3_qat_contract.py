@@ -122,7 +122,6 @@ def test_k3_dist_opt_uses_shared_training_optimizer_primitive(monkeypatch):
     impl_cfg = ImplConfig(
         optimizer="dist_opt",
         optimizer_config=SimpleNamespace(lr=1e-5),
-        grad_reduce_in_fp32=False,
     )
     ps = object()
 
@@ -141,7 +140,6 @@ def test_k3_dist_opt_uses_shared_training_optimizer_primitive(monkeypatch):
                 "model_name": "k3",
                 "is_expert": protocol.is_expert_param,
                 "deterministic": False,
-                "grad_reduce_in_fp32": False,
             },
         )
     ]
