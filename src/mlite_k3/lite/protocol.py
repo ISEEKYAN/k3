@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -178,15 +180,30 @@ def _build_dist_opt_optimizer(
         build_dist_opt_training_optimizer,
     )
 
-    return build_dist_opt_training_optimizer(
-        chunks,
+    kwargs = dict(
         model_cfg=model_cfg,
         impl_cfg=impl_cfg,
         ps=ps,
         model_name="k3",
         is_expert=is_expert_param,
         deterministic=impl_cfg.deterministic,
-        grad_reduce_in_fp32=impl_cfg.grad_reduce_in_fp32,
+    )
+    if "grad_reduce_in_fp32" in inspect.signature(
+        build_dist_opt_training_optimizer
+    ).parameters:
+        kwargs["grad_reduce_in_fp32"] = impl_cfg.grad_reduce_in_fp32
+    elif not impl_cfg.grad_reduce_in_fp32:
+        warnings.warn(
+            "K3 requested grad_reduce_in_fp32=False, but the installed MLite "
+            "optimizer primitive does not expose that capability; falling back "
+            "to MLite's FP32 gradient reduction default.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    return build_dist_opt_training_optimizer(
+        chunks,
+        **kwargs,
     )
 
 

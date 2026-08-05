@@ -107,7 +107,8 @@ def test_k3_dist_opt_uses_shared_training_optimizer_primitive(monkeypatch):
     expected_optimizer = object()
     expected_finalize = object()
 
-    def build(chunks, **kwargs):
+    def build(chunks, *, grad_reduce_in_fp32, **kwargs):
+        kwargs["grad_reduce_in_fp32"] = grad_reduce_in_fp32
         calls.append((chunks, kwargs))
         return expected_optimizer, expected_finalize
 
@@ -142,6 +143,50 @@ def test_k3_dist_opt_uses_shared_training_optimizer_primitive(monkeypatch):
                 "deterministic": False,
                 "grad_reduce_in_fp32": False,
             },
+        )
+    ]
+
+
+def test_k3_dist_opt_mainbase_falls_back_loudly_without_grad_reduce_kwarg(
+    monkeypatch,
+):
+    calls = []
+    expected_optimizer = object()
+    expected_finalize = object()
+
+    def build(chunks, *, model_cfg, impl_cfg, ps, model_name, is_expert, deterministic):
+        calls.append((chunks, model_cfg, impl_cfg, ps, model_name, is_expert, deterministic))
+        return expected_optimizer, expected_finalize
+
+    monkeypatch.setattr(
+        "megatron.lite.primitive.optimizers.megatron_wrap."
+        "build_dist_opt_training_optimizer",
+        build,
+    )
+    chunks = [object()]
+    model_cfg = _tiny_config()
+    impl_cfg = ImplConfig(
+        optimizer="dist_opt",
+        optimizer_config=SimpleNamespace(lr=1e-5),
+        grad_reduce_in_fp32=False,
+    )
+    ps = object()
+
+    with pytest.warns(RuntimeWarning, match="grad_reduce_in_fp32=False"):
+        optimizer, finalize = protocol._build_dist_opt_optimizer(
+            chunks, model_cfg, impl_cfg, ps
+        )
+
+    assert (optimizer, finalize) == (expected_optimizer, expected_finalize)
+    assert calls == [
+        (
+            chunks,
+            model_cfg,
+            impl_cfg,
+            ps,
+            "k3",
+            protocol.is_expert_param,
+            False,
         )
     ]
 
