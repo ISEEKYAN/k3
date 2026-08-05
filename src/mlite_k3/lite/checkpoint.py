@@ -524,6 +524,7 @@ class _K3MXFP4CheckpointAdapter(nn.Module):
         super().__init__()
         self.layer_indices = list(layer_indices)
         self.source_map: dict[str, str] = {}
+        self.local_source_map: dict[str, str] = {}
 
     def add_source(
         self,
@@ -543,6 +544,7 @@ class _K3MXFP4CheckpointAdapter(nn.Module):
             module = child
         module.register_buffer(parts[-1], tensor.detach(), persistent=True)
         self.source_map[global_name] = source_name
+        self.local_source_map[local_name] = source_name
 
 
 class _K3MXFP4CheckpointAdapterSpec:
@@ -1094,7 +1096,7 @@ def _export_mxfp4_weights(
         if not _ROUTED_MXFP4_WEIGHT.fullmatch(hf_name):
             yield hf_name, hf_tensor
             continue
-        from megatron.lite.primitive.quantization.mxfp4 import quantize_mxfp4
+        from mlite_k3.primitive.mxfp4 import quantize_mxfp4
 
         packed, scale = quantize_mxfp4(hf_tensor)
         yield f"{hf_name}_packed", packed
@@ -1140,7 +1142,7 @@ def _export_with_preserved_mxfp4(
 ) -> Iterator[tuple[str, torch.Tensor]]:
     """Reuse original pairs iff they still decode to the gathered model value."""
     from mlite_k3.primitive.mxfp4 import dequantize_mxfp4
-    from megatron.lite.primitive.quantization.mxfp4 import quantize_mxfp4
+    from mlite_k3.primitive.mxfp4 import quantize_mxfp4
 
     pending: dict[str, dict[str, torch.Tensor]] = {}
     for hf_name, hf_tensor in logical_weights:
@@ -1202,6 +1204,20 @@ def _mxfp4_checkpoint_adapters(
     return list(adapters)
 
 
+def _iter_adapter_buffers(
+    adapters: Iterable[_K3MXFP4CheckpointAdapter],
+) -> Iterator[tuple[str, torch.Tensor]]:
+    """Export raw K3 MXFP4 buffers when MLite main excludes module buffers."""
+    for adapter in adapters:
+        for local_name, tensor in adapter.named_buffers():
+            try:
+                yield adapter.local_source_map[local_name], tensor
+            except KeyError as error:
+                raise RuntimeError(
+                    f"K3 MXFP4 adapter has an unmapped buffer {local_name!r}"
+                ) from error
+
+
 def export_hf_weights(
     model: torch.nn.Module | list[torch.nn.Module],
     config: Any,
@@ -1218,6 +1234,9 @@ def export_hf_weights(
     if target not in ("hf", "bf16", "mxfp4"):
         raise ValueError("target must be 'hf', 'bf16', or 'mxfp4'")
     requested_rank0_only = bool(kwargs.pop("rank0_only", False))
+    # MLite main does not expose the newer CPU-export keyword. K3's export is
+    # already CPU-safe once its gathered tensors reach this boundary.
+    kwargs.pop("cpu", None)
     weights = export_with_primitive(
         model,
         K3WeightSpec(config),
@@ -1245,17 +1264,26 @@ def export_hf_weights(
         for native_name, source_name in adapter.source_map.items()
     }
     adapter_spec = _K3MXFP4CheckpointAdapterSpec(source_map, config.num_experts)
-    adapter_kwargs = {
-        key: value
-        for key, value in kwargs.items()
-        if key in {"cpu", "buffer_max_size_bytes"}
-    }
-    preserved = export_with_primitive(
-        adapters,
-        adapter_spec,
-        ps,
-        **adapter_kwargs,
-    )
+    if (
+        int(getattr(ps, "tp_size", 1))
+        == int(getattr(ps, "etp_size", 1))
+        == int(getattr(ps, "ep_size", 1))
+        == int(getattr(ps, "pp_size", 1))
+        == 1
+    ):
+        preserved = _iter_adapter_buffers(adapters)
+    else:
+        adapter_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key in {"cpu", "buffer_max_size_bytes"}
+        }
+        preserved = export_with_primitive(
+            adapters,
+            adapter_spec,
+            ps,
+            **adapter_kwargs,
+        )
     exported = _export_with_preserved_mxfp4(iter(weights), iter(preserved))
     for item in exported:
         if (

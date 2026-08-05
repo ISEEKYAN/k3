@@ -41,13 +41,11 @@ def _tiny_config() -> K3Config:
     )
 
 
-def test_protocol_exports_shared_zigzag_r3_contract():
-    from megatron.lite.model import protocol_utils
-
-    assert protocol.pack_routed_experts is protocol_utils.pack_routed_experts
-    assert protocol.pack_r3_replay_mask is protocol_utils.pack_r3_replay_mask
+def test_protocol_owns_k3_zigzag_r3_contract():
+    assert protocol.pack_routed_experts.__module__ == "mlite_k3.lite.protocol_utils"
+    assert protocol.pack_r3_replay_mask.__module__ == "mlite_k3.lite.protocol_utils"
     assert (
-        protocol.unpack_thd_forward_output is protocol_utils.unpack_thd_forward_output
+        protocol.unpack_thd_forward_output.__module__ == "mlite_k3.lite.protocol_utils"
     )
 
 

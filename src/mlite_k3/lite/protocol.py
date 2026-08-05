@@ -18,9 +18,10 @@ from mlite_k3.validation_schema import (
     VALIDATION_AXES,
     is_verified_evidence_source,
 )
-from megatron.lite.model.protocol_utils import (
+from mlite_k3.lite.protocol_utils import (
     pack_r3_replay_mask,
     pack_routed_experts,
+    pack_thd_forward_kwargs,
     unpack_thd_forward_output,
 )
 
@@ -332,8 +333,6 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
 
     def forward_step(chunk, batch):
         if impl_cfg.use_thd:
-            from megatron.lite.model.protocol_utils import pack_thd_forward_kwargs
-
             kwargs = pack_thd_forward_kwargs(chunk, batch)
             packed_seq_params = kwargs["packed_seq_params"]
             if ps.cp_size == 1:

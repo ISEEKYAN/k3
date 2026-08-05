@@ -9,6 +9,10 @@ def test_verl_backend_registers_k3_before_loading_mlite_backend(monkeypatch):
     events: list[str] = []
     package = importlib.import_module("mlite_k3")
     monkeypatch.setattr(package, "register_model", lambda: events.append("register"))
+    patch = importlib.import_module("mlite_k3.vllm_patch")
+    monkeypatch.setattr(
+        patch, "apply_kimi_k3_mla_patch", lambda: events.append("patch")
+    )
 
     engine = ModuleType("verl_mlite.engine.mlite_engine")
     engine.__dict__["loaded"] = True
@@ -21,5 +25,5 @@ def test_verl_backend_registers_k3_before_loading_mlite_backend(monkeypatch):
     sys.modules.pop("mlite_k3.verl_backend", None)
     backend = importlib.import_module("mlite_k3.verl_backend")
 
-    assert events == ["register"]
+    assert events == ["register", "patch"]
     assert backend.mlite_engine is engine
