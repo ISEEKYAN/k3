@@ -13,7 +13,7 @@ from typing import Any, Iterable, Iterator, Mapping
 import torch
 import torch.nn as nn
 
-from megatron.lite.primitive.ckpt.fused_weights import (
+from mlite_k3.lite.fused_layout import (
     FusedWeightLayout,
     QuantizedWeight,
     WeightSegment,

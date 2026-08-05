@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -413,6 +414,12 @@ def test_k3_declares_the_rollout_kda_fusion_geometry() -> None:
     )
 
 
+def test_k3_checkpoint_layout_is_self_contained() -> None:
+    source = (Path(__file__).parents[2] / "src/mlite_k3/lite/checkpoint.py").read_text()
+
+    assert "megatron.lite.primitive.ckpt.fused_weights" not in source
+
+
 def test_k3_rollout_layout_rejects_wrong_order_and_head_count() -> None:
     layout = K3WeightSpec(_TinyConfig()).kda_rollout_layout
     source = {segment.name: torch.zeros(segment.rows, 2) for segment in layout.segments}
@@ -428,6 +435,18 @@ def test_k3_rollout_layout_rejects_wrong_order_and_head_count() -> None:
         layout.fuse_ordered(
             tuple((segment.name, source[segment.name]) for segment in layout.segments)
         )
+
+
+def test_k3_rollout_layout_keeps_replicated_rows_and_rejects_uneven_heads() -> None:
+    layout = K3WeightSpec(_TinyConfig()).kda_rollout_layout
+    replicated = next(segment for segment in layout.segments if segment.name == "f_a")
+    q = next(segment for segment in layout.segments if segment.name == "q")
+
+    assert q.local_rows(1) == q.rows
+    assert replicated.local_rows(1) == replicated.rows
+    assert replicated.local_rows(3) == replicated.rows
+    with pytest.raises(ValueError, match=r"q has 3 heads.*world_size=2"):
+        q.local_rows(2)
 
 
 def test_k3_rollout_layout_splits_each_mxfp4_scale_bit_exactly() -> None:
