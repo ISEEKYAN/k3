@@ -131,6 +131,12 @@ class _K3FullRankDeltaNet(nn.Module):
         )
         return F.silu(output[:, :, :seq_len].transpose(1, 2))
 
+    def _output_projection(
+        self, output: torch.Tensor, reference: torch.Tensor
+    ) -> torch.Tensor:
+        """Restore the model activation dtype after KDA's FP32 math."""
+        return self.o_proj(output.to(dtype=reference.dtype))
+
     def forward(
         self,
         x: torch.Tensor,
@@ -173,7 +179,7 @@ class _K3FullRankDeltaNet(nn.Module):
         gate = self.g_proj(x).transpose(0, 1).contiguous().view_as(output).sigmoid()
         output = self.o_norm(output) * gate
         output = output.flatten(-2).transpose(0, 1).contiguous()
-        return self.o_proj(output)
+        return self._output_projection(output, x)
 
 
 class K3FullRankGatedDeltaNet(_K3FullRankDeltaNet):
@@ -328,7 +334,8 @@ class K3FullRankGatedDeltaNet(_K3FullRankDeltaNet):
             output.flatten(-2),
             cu_seqlens,
         )
-        return self.o_proj(output.transpose(0, 1).contiguous())
+        output = output.transpose(0, 1).contiguous()
+        return self._output_projection(output, x)
 
 
 __all__ = ["K3FullRankGatedDeltaNet"]

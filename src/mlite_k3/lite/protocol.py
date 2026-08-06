@@ -10,15 +10,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import torch
+import torch.distributed as dist
 
 from mlite_k3.validation_schema import (
     VALIDATION_AXES,
     is_verified_evidence_source,
 )
-from megatron.lite.model.protocol_utils import (
+from mlite_k3.lite.protocol_utils import (
     pack_r3_replay_mask,
     pack_routed_experts,
-    router_replay_roots,
+    pack_thd_forward_kwargs,
     unpack_thd_forward_output,
 )
 
@@ -54,14 +55,138 @@ _VALIDATION_DOC_EVIDENCE = re.compile(
 class ImplConfig:
     parallel: Any = None
     optimizer: str | None = None
+    optimizer_config: Any = None
     device: str = "cuda"
     dtype: str = "bfloat16"
     use_thd: bool = False
     use_deepep: bool = False
     deterministic: bool = False
+    moe_router_fusion: bool = False
     kda_cp_mode: str = "headwise"
     qat: QATSpec | dict[str, Any] | None = None
     validation_evidence: Mapping[str, tuple[str, ...]] | None = None
+
+
+def is_expert_param(name: str) -> bool:
+    return ".moe.experts.fc" in name
+
+
+def unpack_forward_output(model, batch, output) -> Any:
+    """Reverse THD padding/CP layout for the VERL loss adapter."""
+    return unpack_thd_forward_output(model, batch, output)
+
+
+def select_routed_experts(
+    model: torch.nn.Module,
+    routed_experts,
+):
+    """Align rollout layer slots with the K3 actor's live MoE routers."""
+    config = model.config
+    dense_prefix = int(config.first_k_dense_replace)
+    if dense_prefix < 0:
+        raise ValueError("first_k_dense_replace must be non-negative")
+
+    is_nested = bool(getattr(routed_experts, "is_nested", False))
+    rows = list(routed_experts.unbind(0)) if is_nested else [routed_experts]
+    if not rows:
+        raise ValueError("K3 routed experts must contain at least one sequence")
+    if any(row.ndim != 3 for row in rows):
+        shapes = [tuple(row.shape) for row in rows]
+        raise ValueError(
+            f"K3 routed expert rows must share [sequence, layers, topk], got {shapes}"
+        )
+    layer_counts = {int(row.size(1)) for row in rows}
+    if len(layer_counts) != 1:
+        shapes = [tuple(row.shape) for row in rows]
+        raise ValueError(
+            f"K3 routed expert rows must share [sequence, layers, topk], got {shapes}"
+        )
+    rollout_layers = layer_counts.pop()
+    if dense_prefix > rollout_layers:
+        raise ValueError(
+            "K3 dense prefix exceeds rollout layer count: "
+            f"dense_prefix={dense_prefix} rollout={rollout_layers}"
+        )
+    if dense_prefix == 0:
+        return routed_experts
+
+    def select(row: torch.Tensor) -> torch.Tensor:
+        return row[:, dense_prefix:, :]
+
+    if is_nested:
+        return torch.nested.as_nested_tensor(
+            [select(row) for row in rows],
+            layout=torch.jagged,
+        )
+    return select(routed_experts)
+
+
+def PLACEMENT_FN(param_name: str) -> list:
+    from torch.distributed.tensor import Replicate, Shard
+
+    if is_expert_param(param_name):
+        if ".fc1." in param_name:
+            return [Replicate(), Replicate(), Shard(0), Shard(0)]
+        if ".fc2." in param_name:
+            return [Replicate(), Replicate(), Shard(0), Shard(1)]
+        return [Replicate(), Replicate(), Replicate(), Replicate()]
+    if param_name.endswith(
+        (
+            ".self_attention.q_proj.linear.weight",
+            ".self_attention.k_proj.linear.weight",
+            ".self_attention.v_proj.linear.weight",
+            ".self_attention.g_proj.linear.weight",
+            ".self_attention.f_b_proj.linear.weight",
+            ".self_attention.b_proj.linear.weight",
+            ".self_attention.linear_q_up_proj.linear.weight",
+            ".self_attention.linear_kv_up_proj.linear.weight",
+            ".self_attention.linear_g_proj.linear.weight",
+            ".mlp.gate_up.linear.weight",
+            ".moe.shared_experts.gate_up.linear.weight",
+        )
+    ) or param_name.endswith(
+        (
+            ".self_attention.q_conv1d.weight",
+            ".self_attention.k_conv1d.weight",
+            ".self_attention.v_conv1d.weight",
+            ".self_attention.A_log",
+            ".self_attention.dt_bias",
+        )
+    ):
+        return [Replicate(), Replicate(), Replicate(), Shard(0)]
+    if param_name.endswith(
+        (
+            ".self_attention.o_proj.linear.weight",
+            ".self_attention.linear_proj.linear.weight",
+            ".mlp.down.linear.weight",
+            ".moe.shared_experts.down.linear.weight",
+        )
+    ):
+        return [Replicate(), Replicate(), Replicate(), Shard(1)]
+    if param_name in {
+        "embed_tokens.embedding.weight",
+        "lm_head.col.linear.weight",
+    }:
+        return [Replicate(), Replicate(), Replicate(), Shard(0)]
+    return [Replicate(), Replicate(), Replicate(), Replicate()]
+
+
+def _build_dist_opt_optimizer(
+    chunks, model_cfg: K3Config, impl_cfg: ImplConfig, ps: Any
+):
+    from megatron.lite.primitive.optimizers.megatron_wrap import (
+        build_dist_opt_training_optimizer,
+    )
+
+    return build_dist_opt_training_optimizer(
+        chunks,
+        model_cfg=model_cfg,
+        impl_cfg=impl_cfg,
+        ps=ps,
+        model_name="k3",
+        is_expert=is_expert_param,
+        deterministic=impl_cfg.deterministic,
+    )
 
 
 def build_model_config(source: str | Path | dict, **overrides) -> K3Config:
@@ -75,6 +200,19 @@ def _parallel_size(parallel: Any, name: str) -> int:
         return 1
     value = getattr(parallel, name, 1)
     return 1 if value is None else int(value)
+
+
+def _warmup_ep_collective(ps, *, device: str) -> None:
+    """Initialize NCCL EP channels before model weights consume device memory."""
+    if ps.ep_size <= 1:
+        return
+    if ps.ep_group is None:
+        raise RuntimeError("K3 EP collective warmup requires an EP process group")
+    send = torch.arange(ps.ep_size, dtype=torch.uint8, device=device)
+    recv = torch.empty_like(send)
+    dist.all_to_all_single(recv, send, group=ps.ep_group)
+    if torch.device(device).type == "cuda":
+        torch.cuda.synchronize(device)
 
 
 def _resolve_validated_axes(
@@ -134,12 +272,14 @@ def _assert_validation_doc_contract(contents: str) -> None:
 
 def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
     """Build the verified reference or distributed bundle."""
+    if impl_cfg.moe_router_fusion:
+        raise ValueError("K3 R3 requires moe_router_fusion=False")
     dimensions = {
         name: _parallel_size(impl_cfg.parallel, name)
         for name in ("tp", "ep", "etp", "pp", "cp")
     }
-    if impl_cfg.optimizer is not None:
-        raise NotImplementedError("K3 optimizer integration is not validated yet")
+    if impl_cfg.optimizer not in (None, "dist_opt"):
+        raise ValueError(f"Unknown K3 lite optimizer: {impl_cfg.optimizer!r}.")
     from megatron.lite.primitive.bundle import ModelBundle
     from megatron.lite.primitive.parallel import ParallelState, init_parallel
 
@@ -157,6 +297,7 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
         from mlite_k3.lite.model import K3ParallelModel
 
         ps = init_parallel(impl_cfg.parallel)
+        _warmup_ep_collective(ps, device=impl_cfg.device)
         model = K3ParallelModel(
             model_cfg,
             ps,
@@ -173,8 +314,6 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
 
     def forward_step(chunk, batch):
         if impl_cfg.use_thd:
-            from megatron.lite.model.protocol_utils import pack_thd_forward_kwargs
-
             kwargs = pack_thd_forward_kwargs(chunk, batch)
             packed_seq_params = kwargs["packed_seq_params"]
             if ps.cp_size == 1:
@@ -215,6 +354,25 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
         )
     qat_stats = apply_qat_to_chunks(chunks, qat_spec)
 
+    optimizer = None
+    finalize_grads = None
+    optimizer_backend = "none"
+    if impl_cfg.optimizer == "dist_opt":
+        optimizer, finalize_grads = _build_dist_opt_optimizer(
+            chunks, model_cfg, impl_cfg, ps
+        )
+        from megatron.lite.primitive.ckpt import attach_model_sharded_state_dict
+        from megatron.lite.runtime.megatron_utils import register_training_hooks
+
+        attach_model_sharded_state_dict(
+            chunks,
+            ps,
+            get_placements=PLACEMENT_FN,
+            is_expert=is_expert_param,
+        )
+        register_training_hooks(chunks, optimizer)
+        optimizer_backend = "dist_opt"
+
     validated_axes, validation_evidence = _resolve_validated_axes(
         dimensions,
         use_thd=impl_cfg.use_thd,
@@ -223,9 +381,12 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
     return ModelBundle(
         chunks=chunks,
         parallel_state=ps,
+        optimizer=optimizer,
+        finalize_grads=finalize_grads,
         forward_step=forward_step,
         extras={
             "model_cfg": model_cfg,
+            "optimizer_backend": optimizer_backend,
             "validated_scope": validated_scope,
             "validated_axes": validated_axes,
             "validation_evidence": validation_evidence,
@@ -236,6 +397,16 @@ def build_model(model_cfg: K3Config, *, impl_cfg: ImplConfig):
 
 def vocab_size(model_cfg: K3Config) -> int:
     return model_cfg.vocab_size
+
+
+def router_replay_roots(chunk: torch.nn.Module) -> list[torch.nn.Module]:
+    """Return this pipeline chunk's decoder layers for R3 router discovery."""
+
+    model = getattr(chunk, "model", chunk)
+    layers = getattr(model, "layers", None)
+    if layers is None:
+        return [chunk]
+    return list(layers)
 
 
 def load_hf_weights(
@@ -271,6 +442,7 @@ __all__ = [
     "pack_r3_replay_mask",
     "pack_routed_experts",
     "router_replay_roots",
+    "select_routed_experts",
     "unpack_thd_forward_output",
     "vocab_size",
 ]

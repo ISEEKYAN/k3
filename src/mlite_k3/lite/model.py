@@ -9,7 +9,6 @@ import torch.nn as nn
 import transformer_engine.pytorch as te
 
 from megatron.lite.primitive.modules.dispatcher import TokenDispatcher
-from megatron.lite.primitive.modules.router import SigmoidTopKRouter
 from megatron.lite.primitive.ops.cross_entropy import vocab_parallel_cross_entropy
 from megatron.lite.primitive.parallel import (
     ColumnParallelLinear,
@@ -41,6 +40,7 @@ from mlite_k3.primitive.experts import K3LatentExperts
 from mlite_k3.primitive.kda import kda
 from mlite_k3.primitive.kda_parallel import K3FullRankGatedDeltaNet
 from mlite_k3.primitive.mla import K3MultiLatentAttention
+from mlite_k3.primitive.router import K3SigmoidTopKRouter
 
 
 def _situ_with_probs(
@@ -101,7 +101,7 @@ class ParallelLatentMoE(nn.Module):
     ):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.router = SigmoidTopKRouter(
+        self.router = K3SigmoidTopKRouter(
             config,
             ps,
             compute_aux_loss=False,
@@ -383,6 +383,21 @@ class K3ParallelModel(nn.Module):
                             parameter.detach().float(),
                             requires_grad=parameter.requires_grad,
                         ),
+                    )
+            o_norm = getattr(attention, "o_norm", None)
+            o_norm_weight = getattr(o_norm, "weight", None)
+            if o_norm_weight is not None and o_norm_weight.dtype != torch.float32:
+                o_norm.weight = nn.Parameter(
+                    o_norm_weight.detach().float(),
+                    requires_grad=o_norm_weight.requires_grad,
+                )
+            for name in ("q_conv1d", "k_conv1d", "v_conv1d"):
+                conv = getattr(attention, name, None)
+                weight = getattr(conv, "weight", None)
+                if weight is not None and weight.dtype != torch.float32:
+                    conv.weight = nn.Parameter(
+                        weight.detach().float(),
+                        requires_grad=weight.requires_grad,
                     )
         return model
 

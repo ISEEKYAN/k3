@@ -112,3 +112,7 @@ def test_official_index_plans_every_tp2_ep2_pp2_rank_without_opening_shards():
     assert first_by_name["layers.1.moe.experts.fc1.weight0"].shape == (6144, 3584)
     assert first_by_name["layers.1.moe.experts.fc2.weight0"].shape == (3584, 3072)
     assert first_by_name["layers.1.moe.router.expert_bias"].dtype == torch.float32
+    assert first_by_name["layers.0.self_attention.o_norm.weight"].dtype == torch.float32
+    assert (
+        first_by_name["layers.0.self_attention.q_conv1d.weight"].dtype == torch.float32
+    )

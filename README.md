@@ -149,6 +149,25 @@ These checks require no CUDA. The verified checkpoint and numerical scope is
 the reduced checkpoint proxy and independent functional proxy below; GPU and
 distributed claims require their own non-skipped tests.
 
+## Fail closed on non-finite RL metrics
+
+Place the CPU-only streaming gate in every RL launcher before `tee`. It exits
+with status 42 as soon as a `ppo_kl`, `loss`, or `grad_norm` metric is reported
+as NaN or infinity. `pipefail` makes that status fail the job and also prevents
+the producer from continuing after the gate closes the pipe:
+
+```bash
+set -o pipefail
+PYTHONUNBUFFERED=1 run_training 2>&1 \
+  | k3-rl-finite-gate \
+  | tee "${log_file}"
+```
+
+The matching is restricted to structured `key=value` and `key: value` metric
+fields whose key ends in `ppo_kl`, `loss`, or `grad_norm`; prose and unrelated
+KL metrics are passed through unchanged. The bad line is preserved in the log,
+and `K3_RL_NON_FINITE` identifies the rejected metric on standard error.
+
 ## Attention Residual-aware pipeline layout
 
 `K3ParallelModel` uses Megatron Lite's
